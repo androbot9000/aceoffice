@@ -10,7 +10,9 @@ at the last function we call.
 """
 
 import ctypes
+import json
 import os
+import threading
 from ctypes import (CFUNCTYPE, POINTER, Structure, c_bool, c_char_p, c_int,
                     c_long, c_size_t, c_ubyte, c_uint, c_ulonglong, c_void_p)
 
@@ -163,6 +165,64 @@ class LOKError(RuntimeError):
     pass
 
 
+def uno_args(**kwargs):
+    """JSON arguments for postUnoCommand: uno_args(**{"FontHeight.Height": 12.0})."""
+    out = {}
+    for k, v in kwargs.items():
+        t = ("boolean" if isinstance(v, bool) else "long" if isinstance(v, int)
+             else "float" if isinstance(v, float) else "string")
+        out[k] = {"type": t, "value": v}
+    return json.dumps(out)
+
+
+_MACRO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "macros")
+_XML_HEAD = ('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE library:{kind} PUBLIC '
+             '"-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "{dtd}">\n')
+_LIB_NS = 'xmlns:library="http://openoffice.org/2000/library"'
+
+
+def install_macros(profile):
+    """Register AceOffice's Basic library (aceoffice/macros/*.bas) in its LibreOffice
+    profile, so features LibreOfficeKit has no command for can run as macro:/// URLs."""
+    from xml.sax.saxutils import escape
+    basic = os.path.join(profile, "user", "basic")
+    lib = os.path.join(basic, "AceOffice")
+    os.makedirs(lib, exist_ok=True)
+    modules = sorted(f[:-4] for f in os.listdir(_MACRO_DIR) if f.endswith(".bas"))
+    for name in modules:
+        with open(os.path.join(_MACRO_DIR, name + ".bas")) as f:
+            code = f.read()
+        with open(os.path.join(lib, name + ".xba"), "w") as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE script:module PUBLIC '
+                    '"-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">\n'
+                    f'<script:module xmlns:script="http://openoffice.org/2000/script" script:name="{name}" '
+                    f'script:language="StarBasic" script:moduleType="normal">{escape(code)}</script:module>\n')
+    elements = "".join(f' <library:element library:name="{m}"/>\n' for m in modules)
+    with open(os.path.join(lib, "script.xlb"), "w") as f:
+        f.write(_XML_HEAD.format(kind="library", dtd="library.dtd")
+                + f'<library:library {_LIB_NS} library:name="AceOffice" library:readonly="false" '
+                  f'library:passwordprotected="false">\n{elements}</library:library>\n')
+    with open(os.path.join(lib, "dialog.xlb"), "w") as f:
+        f.write(_XML_HEAD.format(kind="library", dtd="library.dtd")
+                + f'<library:library {_LIB_NS} library:name="AceOffice" library:readonly="false" '
+                  'library:passwordprotected="false"/>\n')
+    for index, xlb in (("script.xlc", "script.xlb"), ("dialog.xlc", "dialog.xlb")):
+        path = os.path.join(basic, index)
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError:
+            text = (_XML_HEAD.format(kind="libraries", dtd="libraries.dtd")
+                    + f'<library:libraries {_LIB_NS} xmlns:xlink="http://www.w3.org/1999/xlink">\n'
+                      '</library:libraries>\n')
+        if 'library:name="AceOffice"' in text:
+            continue
+        entry = (f' <library:library library:name="AceOffice" xlink:href="$(USER)/basic/AceOffice/{xlb}/" '
+                 'xlink:type="simple" library:link="false"/>\n')
+        with open(path, "w") as f:
+            f.write(text.replace("</library:libraries>", entry + "</library:libraries>"))
+
+
 def _point_liblangtag_at_runtime(install):
     """An unpacked runtime (tools/dev-runtime.sh) keeps liblangtag's data under its
     own usr/share, but the library only looks in /usr/share unless told otherwise."""
@@ -213,9 +273,13 @@ class Office:
         profile = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"),
                                "aceoffice", "lo-profile")
         os.makedirs(profile, exist_ok=True)
+        install_macros(profile)
         self._p = hook(install.encode(), ("file://" + profile).encode())
         if not self._p:
             raise LOKError(f"LibreOfficeKit failed to start from {install}")
+        # A brand-new profile is created during startup, replacing the library list;
+        # register again now (Basic loads the list lazily, on the first macro).
+        install_macros(profile)
         self._c = self._p.contents.pClass.contents
         # Without PART_IN_INVALIDATION_CALLBACK, LibreOffice never reports changed tiles.
         self._c.setOptionalFeatures(self._p, FEATURE_NO_TILED_ANNOTATIONS | FEATURE_PART_IN_INVALIDATION_CALLBACK)
@@ -249,7 +313,22 @@ class Document:
         self._d = d
         self._c = d.contents.pClass.contents
         self.path = path
-        self._cb = None  # keep the ctypes callback alive
+        # Listen from the start and hold events until someone registers: LibreOffice
+        # reports some state (e.g. gridlines) while the document is still loading.
+        self._lock = threading.Lock()
+        self._pending = []
+        self._sink = None
+
+        def tramp(kind, payload, _data):
+            text = payload.decode("utf-8", "replace") if payload else ""
+            with self._lock:
+                sink = self._sink
+                if sink is None:
+                    self._pending.append((kind, text))
+                    return
+            sink(kind, text)
+        self._cb = LibreOfficeKitCallback(tramp)   # keep the ctypes callback alive
+        self._c.registerCallback(self._d, self._cb, None)
 
     # lifecycle / info
     def initialize_for_rendering(self):
@@ -304,10 +383,12 @@ class Document:
 
     # input
     def register_callback(self, fn):
-        def tramp(kind, payload, _data):
-            fn(kind, payload.decode("utf-8", "replace") if payload else "")
-        self._cb = LibreOfficeKitCallback(tramp)
-        self._c.registerCallback(self._d, self._cb, None)
+        """Receive (kind, payload) for every event, starting with any held since loading."""
+        with self._lock:
+            pending, self._pending = self._pending, []
+            self._sink = fn
+        for kind, text in pending:
+            fn(kind, text)
 
     def key(self, kind, char_code, key_code):
         self._c.postKeyEvent(self._d, kind, char_code, key_code)
@@ -326,6 +407,10 @@ class Document:
     def paste(self, text, mime="text/plain;charset=utf-8"):
         data = text.encode("utf-8")
         return self._c.paste(self._d, mime.encode(), data, len(data))
+
+    def run_macro(self, call):
+        """Run a Basic routine from AceOffice's library on this document, e.g. 'Page.SetPage(1,2)'."""
+        self.uno(f"macro:///AceOffice.{call}")
 
     def command_values(self, command):
         return _take_string(self._c.getCommandValues(self._d, command.encode()))

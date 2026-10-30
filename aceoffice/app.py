@@ -13,13 +13,27 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from . import __version__, lok  # noqa: E402
-from .window import OPEN_PATTERNS, PRESENTATIONS_ENABLED, DocumentWindow, swatch_css  # noqa: E402
+from .widgets import swatch_css  # noqa: E402
+from .window import OPEN_PATTERNS, PRESENTATIONS_ENABLED, DocumentWindow  # noqa: E402
 
 APP_ID = "io.github.androbot9000.AceOffice"
 
 CSS = """
-/* Follows libadwaita's light/dark colours: a slightly deeper shade of the window. */
-.ace-canvas { background-color: color-mix(in srgb, var(--window-fg-color) 9%, var(--window-bg-color)); }
+/* Flat, quiet chrome in the spirit of classic Mac apps: the title bar and toolbar read as
+   one surface, controls only show a background on hover, and thin rules separate areas.
+   Colours come from the current theme (currentColor), so it follows Adwaita, WhiteSur, etc. */
+.ace-toolbar { padding: 2px 8px 4px; }
+.ace-toolbar dropdown > button, .ace-toolbar splitbutton > button, .ace-toolbar splitbutton > menubutton > button {
+  background: none; box-shadow: none; }
+.ace-toolbar dropdown > button:hover, .ace-toolbar splitbutton > button:hover,
+.ace-toolbar splitbutton > menubutton > button:hover { background: alpha(currentColor, 0.08); }
+.ace-split { border-top: 1px solid alpha(currentColor, 0.12); }
+.ace-statusbar { border-top: 1px solid alpha(currentColor, 0.12); padding: 0 6px; min-height: 30px; }
+.ace-statusbar button { min-height: 24px; padding-top: 0; padding-bottom: 0; }
+.ace-inspector { border-left: 1px solid alpha(currentColor, 0.12); }
+.ace-inspector-heading { font-size: 9pt; font-weight: 700; opacity: 0.6; }
+/* A slightly deeper shade of the window behind the page. */
+.ace-canvas { background-color: alpha(currentColor, 0.07); }
 .ace-header { background-color: alpha(currentColor, 0.04); font-size: 9pt; font-feature-settings: "tnum"; }
 .ace-new-card { min-width: 150px; }
 .ace-swatch { min-width: 24px; min-height: 24px; padding: 0; border-radius: 6px;
@@ -81,7 +95,8 @@ class AceOfficeApp(Adw.Application):
         for action, accels in [("win.save", ["<Ctrl>s"]), ("win.save-as", ["<Ctrl><Shift>s"]),
                                ("win.export-pdf", ["<Ctrl>p"]), ("win.zoom-in", ["<Ctrl>plus", "<Ctrl>equal"]),
                                ("win.zoom-out", ["<Ctrl>minus"]), ("win.zoom-reset", ["<Ctrl>0"]),
-                               ("win.find", ["<Ctrl>f"]), ("window.close", ["<Ctrl>w"])]:
+                               ("win.find", ["<Ctrl>f"]), ("win.format-panel", ["<Ctrl><Shift>f"]),
+                               ("window.close", ["<Ctrl>w"])]:
             self.set_accels_for_action(action, accels)
 
         # Starting LibreOffice takes a few seconds; do it while the start page is up.

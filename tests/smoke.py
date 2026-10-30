@@ -154,6 +154,27 @@ def iter_widgets(w):
         child = child.get_next_sibling()
 
 
+def step_page_setup(win):
+    """Open the Format sidebar's Document tab, read the page, apply the Narrow margins."""
+    win.activate_action("win.format-panel")
+    win.inspector.stack.set_visible_child_name("document")
+    ps = win.inspector.page_setup
+    loop_until(lambda: ps.page, 4000)
+    check(f"page setup read from the document ({ps.page})", ps.page is not None and len(ps.page) == 7)
+    before = win.view._cursor
+    ps._set_margins(1270, 1270, 1270, 1270)          # the Narrow preset
+    loop_until(lambda: ps.page and ps.page[3] == 1270, 4000)
+    check(f"narrow margins applied ({ps.page})", ps.page and ps.page[3:] == [1270, 1270, 1270, 1270])
+    win.view.press_key(0, 1028)                        # Home, so LibreOffice reports the caret again
+    loop_until(lambda: win.view._cursor != before, 2000)
+    loop_until(lambda: False, 600)
+    shot(win, "2d-inspector-document")
+    win.inspector.stack.set_visible_child_name("text")
+    loop_until(lambda: False, 300)
+    shot(win, "2e-inspector-text")
+    win.activate_action("win.format-panel")
+
+
 def loop_until(pred, ms):
     ctx = GLib.MainContext.default()
     end = GLib.get_monotonic_time() + ms * 1000
@@ -166,13 +187,15 @@ def step_text_shot():
     check("document marked modified", win.modified)
     check(f"status bar shows pages and words ({win.status_label.get_label()!r})",
           "Page 1 of 1" in win.status_label.get_label() and "words" in win.status_label.get_label())
-    font = win.font_dropdown.get_selected_item()
-    check(f"font list loaded, current font shown ({win.font_names.get_n_items()} fonts, "
-          f"{font.get_string() if font else None})", win.font_names.get_n_items() > 5 and font)
+    font = win.fmt._fonts[0].get_selected_item()
+    names = win.fmt.font_names()
+    check(f"font list loaded, current font shown ({names.get_n_items()} fonts, "
+          f"{font.get_string() if font else None})", names.get_n_items() > 5 and font)
     check(f"no blank tiles while typing ({win.view.placeholder_frames} of {win.view.frames} frames)",
           win.view.frames > 20 and win.view.placeholder_frames == 0)
     shot(win, "2-document")
     step_find_and_menu(win)
+    step_page_setup(win)
     path = os.path.join(DOCS, "Notes.docx")
     win._write(path)
     check("saved docx", os.path.exists(path) and os.path.getsize(path) > 1000)
@@ -183,6 +206,8 @@ def step_text_shot():
 
 def step_sheet():
     win = editor_win()
+    loop_until(lambda: win.grid_visible is False, 2000)
+    check("new spreadsheet starts without gridlines", win.grid_visible is False)
     v = win.view
     v.grab_focus()
     v.type_text("Item\tCost\n")
@@ -207,6 +232,17 @@ def step_sheet_shot():
 def step_sheet2():
     win = editor_win()
     check("added a second sheet", win.doc.parts() == 2)
+    check("the new sheet has no gridlines either", win.grid_visible is False)
+    win.activate_action("win.format-panel")
+    win.inspector.stack.set_visible_child_name("sheet")
+    loop_until(lambda: False, 800)
+    shot(win, "3b-inspector-sheet")
+    win.inspector.grid_switch.set_active(True)
+    loop_until(lambda: win.grid_visible, 2000)
+    check("gridlines switch turns them on", win.grid_visible is True)
+    win.inspector.grid_switch.set_active(False)
+    loop_until(lambda: not win.grid_visible, 2000)
+    win.activate_action("win.format-panel")
     shot(win, "3-spreadsheet")
     win._write(os.path.join(DOCS, "Budget.xlsx"))
     win.view.invalidate_all()

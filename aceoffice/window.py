@@ -8,11 +8,13 @@ import json
 import os
 import threading
 
-from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk, Pango
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
 from . import lok
 from .docview import DocView
 from .headers import SheetHeaders
+from .inspector import Formatting, Inspector
+from .lok import uno_args
 
 KINDS = {
     lok.DOCTYPE_TEXT: "text",
@@ -43,64 +45,6 @@ SAVE_FORMATS = {
     "presentation": [("PowerPoint Presentation", "pptx"), ("OpenDocument Presentation", "odp")],
 }
 
-TEXT_COLORS = ["#000000", "#5e5c64", "#c01c28", "#e66100", "#c88800",
-               "#26a269", "#2190a4", "#1c71d8", "#813d9c", "#ffffff"]
-FILL_COLORS = ["#f9f06b", "#ffbe6f", "#f66151", "#8ff0a4", "#99c1f1",
-               "#dc8add", "#cdab8f", "#deddda", "#ffffff", None]
-
-
-class ColorBar(Gtk.Widget):
-    """The thin colour stripe under a colour button's glyph."""
-    __gtype_name__ = "AceColorBar"
-
-    def __init__(self, color):
-        super().__init__(width_request=18, height_request=4)
-        self.set_color(color)
-
-    def set_color(self, color):
-        self._rgba = Gdk.RGBA()
-        self._rgba.parse(color or "rgba(128,128,128,0.4)")
-        self.queue_draw()
-
-    def do_snapshot(self, snapshot):
-        snapshot.append_color(self._rgba, Graphene.Rect().init(0, 0, self.get_width(), self.get_height()))
-
-
-def _swatch_class(color):
-    return "ace-sw-" + color.lstrip("#")
-
-
-def swatch_css():
-    rules = [f".{_swatch_class(c)} {{ background: {c}; }}" for c in TEXT_COLORS + FILL_COLORS if c]
-    return "\n".join(rules)
-
-
-PARAGRAPH_STYLES = [("Body", "Default Paragraph Style"), ("Title", "Title"), ("Subtitle", "Subtitle"),
-                    ("Heading 1", "Heading 1"), ("Heading 2", "Heading 2"), ("Heading 3", "Heading 3"),
-                    ("Quote", "Quotations")]
-
-# Toolbar commands per document kind: (icon or label, tooltip, uno command, toggles).
-ALIGN = {
-    "text": [(".uno:LeftPara", "format-justify-left-symbolic", "Align Left"),
-             (".uno:CenterPara", "format-justify-center-symbolic", "Center"),
-             (".uno:RightPara", "format-justify-right-symbolic", "Align Right"),
-             (".uno:JustifyPara", "format-justify-fill-symbolic", "Justify")],
-    "spreadsheet": [(".uno:AlignLeft", "format-justify-left-symbolic", "Align Left"),
-                    (".uno:AlignHorizontalCenter", "format-justify-center-symbolic", "Center"),
-                    (".uno:AlignRight", "format-justify-right-symbolic", "Align Right")],
-}
-ALIGN["presentation"] = ALIGN["text"]
-
-
-def _uno_args(**kwargs):
-    out = {}
-    for k, v in kwargs.items():
-        t = ("boolean" if isinstance(v, bool) else "long" if isinstance(v, int)
-             else "float" if isinstance(v, float) else "string")
-        out[k] = {"type": t, "value": v}
-    return json.dumps(out)
-
-
 class DocumentWindow(Adw.ApplicationWindow):
     def __init__(self, app):
         size = load_state().get("window", {})
@@ -114,8 +58,8 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.imported_from = None
         self.modified = False
         self._syncing = False
-        self._toggles = {}
-        self._parts_model_part = -1
+        self.grid_visible = True
+        self._grid_default_off = False   # hide gridlines on the next sheet LibreOffice reports
 
         self.title = Adw.WindowTitle(title="AceOffice")
         header = Adw.HeaderBar(title_widget=self.title)
@@ -147,6 +91,9 @@ class DocumentWindow(Adw.ApplicationWindow):
         main_menu.append_section(None, app_section)
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=main_menu,
                                        primary=True, tooltip_text="Main Menu"))
+        self.format_button = Gtk.ToggleButton(icon_name="sidebar-show-right-symbolic", visible=False,
+                                              tooltip_text="Format (Ctrl+Shift+F)")
+        header.pack_end(self.format_button)
         self.save_button = Gtk.Button(icon_name="document-save-symbolic", action_name="win.save",
                                       tooltip_text="Save (Ctrl+S)", visible=False)
         header.pack_end(self.save_button)
@@ -163,16 +110,19 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.stack.add_named(self.error_page, "error")
 
         self.toasts = Adw.ToastOverlay(child=self.stack)
-        toolbar_view = Adw.ToolbarView(content=self.toasts)
-        toolbar_view.add_top_bar(header)
-        self.set_content(toolbar_view)
+        # The header and, once a document is open, its toolbar share one flat, unified bar.
+        self.toolbar_view = Adw.ToolbarView(content=self.toasts, top_bar_style=Adw.ToolbarStyle.FLAT,
+                                            css_classes=["ace-unified"])
+        self.toolbar_view.add_top_bar(header)
+        self.set_content(self.toolbar_view)
 
         for name, cb in [("save", self.save), ("save-as", self.save_as), ("export-pdf", self.export_pdf),
                          ("zoom-in", lambda: self._zoom(1.1)), ("zoom-out", lambda: self._zoom(1 / 1.1)),
                          ("zoom-reset", lambda: self._zoom(None)), ("find", self._show_find),
                          ("cut", lambda: self.view.cut()), ("copy", lambda: self.view.copy()),
                          ("paste", lambda: self.view.paste()),
-                         ("select-all", lambda: self.doc.uno(".uno:SelectAll"))]:
+                         ("select-all", lambda: self.doc.uno(".uno:SelectAll")),
+                         ("format-panel", lambda: self.format_button.set_active(not self.format_button.get_active()))]:
             action = Gio.SimpleAction(name=name)
             action.connect("activate", lambda _a, _p, cb=cb: cb())
             self.add_action(action)
@@ -289,6 +239,8 @@ class DocumentWindow(Adw.ApplicationWindow):
         if path:
             Gtk.RecentManager.get_default().add_item(Gio.File.new_for_path(path).get_uri())
 
+        # Gridlines are saved per sheet, so files keep their own setting; new ones start without.
+        self._grid_default_off = kind == "spreadsheet" and path is None
         self.view = DocView(doc)
         self.view.connect("state-changed", self._on_state_changed)
         self.view.connect("part-changed", lambda _v, n: self._select_part(n))
@@ -300,6 +252,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.stack.set_visible_child_name("editor")
         self._set_doc_actions(True)
         self.save_button.set_visible(True)
+        self.format_button.set_visible(True)
         self._update_title()
         if self.kind == "text":
             GLib.idle_add(self._initial_fit)
@@ -321,12 +274,12 @@ class DocumentWindow(Adw.ApplicationWindow):
     # --- editor -------------------------------------------------------------------
 
     def _build_editor(self):
-        editor = Adw.ToolbarView(top_bar_style=Adw.ToolbarStyle.RAISED_BORDER,
-                                 bottom_bar_style=Adw.ToolbarStyle.RAISED_BORDER)
-        editor.add_top_bar(self._build_format_bar())
-        if self.kind == "spreadsheet":
-            editor.add_top_bar(self._build_formula_bar())
-        editor.add_top_bar(self._build_find_bar())
+        self.fmt = Formatting(self)
+        for bar in (self._build_format_bar(),
+                    self._build_formula_bar() if self.kind == "spreadsheet" else None,
+                    self._build_find_bar()):
+            if bar:
+                self.toolbar_view.add_top_bar(bar)
         self.view.connect("context-menu", self._on_context_menu)
         self.view.connect("search-not-found", lambda *_: self._set_find_status("Not found"))
 
@@ -343,67 +296,50 @@ class DocumentWindow(Adw.ApplicationWindow):
             body.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
             body.append(self.scrolled)
             content = body
-        editor.set_content(content)
-        editor.add_bottom_bar(self._build_status_bar())
-        return editor
 
-    def _button(self, icon=None, label=None, tooltip=None, command=None, toggle=False, args=None):
-        cls = Gtk.ToggleButton if toggle else Gtk.Button
-        b = cls(icon_name=icon, tooltip_text=tooltip, css_classes=["flat"]) if icon else \
-            cls(label=label, tooltip_text=tooltip, css_classes=["flat"])
-        if command:
-            def clicked(_b):
-                if self._syncing:
-                    return
-                self.doc.uno(command, args)
-                self._set_modified(True)
-                self.view.grab_focus()
-            b.connect("toggled" if toggle else "clicked", clicked)
-            if toggle:
-                self._toggles[command] = b
-        return b
+        main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        main.append(content)
+        main.append(self._build_status_bar())
 
-    def _group(self, *buttons):
-        g = Gtk.Box(css_classes=["linked"])
-        for b in buttons:
-            g.append(b)
-        return g
+        self.inspector = Inspector(self, self.fmt)
+        split = Adw.OverlaySplitView(content=main, sidebar=self.inspector, sidebar_position=Gtk.PackType.END,
+                                     show_sidebar=False, min_sidebar_width=270, max_sidebar_width=320,
+                                     css_classes=["ace-split"])
+        self.format_button.bind_property("active", split, "show-sidebar",
+                                         GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
+        split.connect("notify::show-sidebar", lambda sv, _p: sv.get_show_sidebar() and self.inspector.refresh())
+        return split
+
+    @staticmethod
+    def _group(*buttons):
+        return Formatting.group(*buttons)
+
+    def _button(self, icon=None, label=None, tooltip=None):
+        return self.fmt.button(icon=icon, label=label, tooltip=tooltip)
 
     def _build_format_bar(self):
-        bar = Gtk.Box(spacing=12, css_classes=["toolbar"])
-        bar.append(self._group(self._button("edit-undo-symbolic", tooltip="Undo (Ctrl+Z)", command=".uno:Undo"),
-                               self._button("edit-redo-symbolic", tooltip="Redo (Ctrl+Shift+Z)", command=".uno:Redo")))
-
+        fmt = self.fmt
+        bar = Gtk.Box(spacing=14, css_classes=["toolbar", "ace-toolbar"])
+        bar.append(fmt.undo_redo())
         if self.kind == "text":
-            self.style_dropdown = Gtk.DropDown.new_from_strings([s[0] for s in PARAGRAPH_STYLES])
-            self.style_dropdown.set_tooltip_text("Paragraph style")
-            self.style_dropdown.connect("notify::selected", self._on_style_selected)
-            bar.append(self.style_dropdown)
-
-        bar.append(self._build_font_controls())
-        bar.append(self._group(
-            self._button("format-text-bold-symbolic", tooltip="Bold (Ctrl+B)", command=".uno:Bold", toggle=True),
-            self._button("format-text-italic-symbolic", tooltip="Italic (Ctrl+I)", command=".uno:Italic", toggle=True),
-            self._button("format-text-underline-symbolic", tooltip="Underline (Ctrl+U)",
-                         command=".uno:Underline", toggle=True),
-            self._button("format-text-strikethrough-symbolic", tooltip="Strikethrough",
-                         command=".uno:Strikeout", toggle=True)))
-        bar.append(self._build_color_controls())
-        bar.append(self._group(*[self._button(icon, tooltip=tip, command=cmd, toggle=True)
-                                 for cmd, icon, tip in ALIGN[self.kind]]))
-
+            bar.append(fmt.style_dropdown())
+        fonts = Gtk.Box(spacing=2)
+        fonts.append(fmt.font_dropdown())
+        fonts.append(fmt.size_dropdown())
+        bar.append(fonts)
+        bar.append(fmt.emphasis(strike=False))
+        bar.append(fmt.colors(self.kind))
+        bar.append(fmt.alignment(self.kind))
         if self.kind == "text":
-            bar.append(self._group(
-                self._button("view-list-bullet-symbolic", tooltip="Bulleted list", command=".uno:DefaultBullet",
-                             toggle=True),
-                self._button("view-list-ordered-symbolic", tooltip="Numbered list",
-                             command=".uno:DefaultNumbering", toggle=True)))
+            bar.append(fmt.group(
+                fmt.toggle("view-list-bullet-symbolic", tooltip="Bulleted list", command=".uno:DefaultBullet"),
+                fmt.toggle("view-list-ordered-symbolic", tooltip="Numbered list", command=".uno:DefaultNumbering")))
             bar.append(self._image_button())
         elif self.kind == "spreadsheet":
-            bar.append(self._group(
-                self._button(label="$", tooltip="Currency", command=".uno:NumberFormatCurrency", toggle=True),
-                self._button(label="%", tooltip="Percent", command=".uno:NumberFormatPercent", toggle=True),
-                self._button(label="Σ", tooltip="Sum", command=".uno:AutoSum")))
+            bar.append(fmt.group(
+                fmt.toggle(label="$", tooltip="Currency", command=".uno:NumberFormatCurrency"),
+                fmt.toggle(label="%", tooltip="Percent", command=".uno:NumberFormatPercent"),
+                fmt.button(label="Σ", tooltip="Sum", command=".uno:AutoSum")))
         elif self.kind == "presentation":
             add = self._button("list-add-symbolic", tooltip="New slide")
             add.connect("clicked", lambda *_: self._add_slide())
@@ -414,97 +350,10 @@ class DocumentWindow(Adw.ApplicationWindow):
         return Gtk.ScrolledWindow(child=bar, vscrollbar_policy=Gtk.PolicyType.NEVER,
                                   hscrollbar_policy=Gtk.PolicyType.EXTERNAL, propagate_natural_height=True)
 
-    def _build_font_controls(self):
-        names = []
-        raw = self.doc.command_values(".uno:CharFontName")
-        try:
-            names = sorted(json.loads(raw)["commandValues"].keys(), key=str.casefold) if raw else []
-        except (ValueError, KeyError, AttributeError):
-            pass
-        self.font_names = Gtk.StringList.new(names)
-        self.font_dropdown = Gtk.DropDown(model=self.font_names, enable_search=True, tooltip_text="Font",
-                                          expression=Gtk.PropertyExpression.new(Gtk.StringObject, None, "string"))
-        self.font_dropdown.set_size_request(170, -1)
-        self.font_dropdown.connect("notify::selected", self._on_font_selected)
-
-        self.size_spin = Gtk.SpinButton.new_with_range(1, 999, 1)
-        self.size_spin.set_tooltip_text("Text size")
-        self.size_spin.set_value(12)
-        self.size_spin.connect("value-changed", self._on_size_changed)
-        box = Gtk.Box(spacing=4)
-        box.append(self.font_dropdown)
-        box.append(self.size_spin)
-        return box
-
-    def _build_color_controls(self):
-        fill_cmd = ".uno:BackgroundColor" if self.kind == "spreadsheet" else ".uno:CharBackColor"
-        group = Gtk.Box(spacing=4)
-        group.append(self._color_control("A", "Text color", ".uno:Color", "Color", "#c01c28", TEXT_COLORS))
-        group.append(self._color_control("ab", "Highlight" if self.kind == "text" else "Fill color",
-                                         fill_cmd, fill_cmd.split(":")[1], "#f9f06b", FILL_COLORS))
-        return group
-
-    def _color_control(self, glyph, tip, command, arg, default, palette):
-        """A split button: the face applies the last colour, the arrow opens a palette."""
-        current = [default]
-
-        bar = ColorBar(default)
-        face = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, valign=Gtk.Align.CENTER)
-        face.append(Gtk.Label(label=glyph, css_classes=["heading"]))
-        face.append(bar)
-
-        def apply(color):
-            current[0] = color
-            bar.set_color(color)
-            value = -1 if color is None else int(color[1:], 16)   # -1: no colour / automatic
-            self.doc.uno(command, _uno_args(**{arg: value}))
-            self._set_modified(True)
-            self.view.grab_focus()
-
-        split = Adw.SplitButton(child=face, tooltip_text=tip, dropdown_tooltip=f"Choose {tip.lower()}")
-        split.connect("clicked", lambda *_: apply(current[0]))
-
-        popover = Gtk.Popover()
-        grid = Gtk.Grid(row_spacing=6, column_spacing=6, margin_top=6, margin_bottom=6,
-                        margin_start=6, margin_end=6)
-        for n, color in enumerate(palette):
-            swatch = Gtk.Button(css_classes=["ace-swatch"] + ([_swatch_class(color)] if color else ["ace-swatch-none"]),
-                                tooltip_text=color or "None")
-            swatch.connect("clicked", lambda _b, c=color: (popover.popdown(), apply(c)))
-            grid.attach(swatch, n % 5, n // 5, 1, 1)
-        custom = Gtk.Button(label="Custom…", css_classes=["flat"])
-
-        def choose(_b):
-            popover.popdown()
-            rgba = Gdk.RGBA()
-            rgba.parse(current[0] or "#000000")
-
-            def done(dialog, res):
-                try:
-                    c = dialog.choose_rgba_finish(res)
-                except GLib.Error:
-                    return
-                apply("#%02x%02x%02x" % (round(c.red * 255), round(c.green * 255), round(c.blue * 255)))
-            Gtk.ColorDialog(with_alpha=False).choose_rgba(self, rgba, None, done)
-        custom.connect("clicked", choose)
-        grid.attach(custom, 0, 2, 5, 1)
-        popover.set_child(grid)
-        split.set_popover(popover)
-        return split
-
-    def _on_font_selected(self, dropdown, _pspec):
-        item = dropdown.get_selected_item()
-        if self._syncing or not item:
-            return
-        self.doc.uno(".uno:CharFontName", _uno_args(**{"CharFontName.FamilyName": item.get_string()}))
-        self._set_modified(True)
-        self.view.grab_focus()
-
-    def _on_size_changed(self, spin):
-        if self._syncing:
-            return
-        self.doc.uno(".uno:FontHeight", _uno_args(**{"FontHeight.Height": float(spin.get_value())}))
-        self._set_modified(True)
+    def show_sheet_headers(self, show):
+        if self.headers:
+            for w in (self.headers.rows, self.headers.columns, self.headers.corner):
+                w.set_visible(show)
 
     # --- find ---------------------------------------------------------------------
 
@@ -552,7 +401,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         if not text:
             return
         self._set_find_status("")
-        self.doc.uno(".uno:ExecuteSearch", _uno_args(**{
+        self.doc.uno(".uno:ExecuteSearch", uno_args(**{
             "SearchItem.SearchString": text, "SearchItem.Backward": backward,
             "SearchItem.Command": 0}))
 
@@ -578,7 +427,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         popover.popup()
 
     def _build_status_bar(self):
-        bar = Gtk.Box(spacing=8, css_classes=["toolbar"])
+        bar = Gtk.Box(spacing=8, css_classes=["toolbar", "ace-statusbar"])
         if self.kind == "spreadsheet":
             bar.append(self._build_sheet_tabs())
         else:
@@ -601,7 +450,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         return b
 
     def _build_formula_bar(self):
-        bar = Gtk.Box(spacing=6, css_classes=["toolbar"])
+        bar = Gtk.Box(spacing=6, css_classes=["toolbar", "ace-toolbar"])
         self.cell_label = Gtk.Label(label="A1", width_chars=8, css_classes=["monospace", "dim-label"])
         bar.append(self.cell_label)
         bar.append(Gtk.Label(label="ƒx", css_classes=["dim-label"]))
@@ -683,7 +532,8 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     def _add_sheet(self):
         n = self.doc.parts()
-        self.doc.uno(".uno:Insert", _uno_args(Name="", Index=n + 1))
+        self._grid_default_off = True
+        self.doc.uno(".uno:Insert", uno_args(Name="", Index=n + 1))
         self._set_modified(True)
         GLib.timeout_add(300, self._after_part_added)
 
@@ -692,14 +542,6 @@ class DocumentWindow(Adw.ApplicationWindow):
         self._set_part(self.doc.parts() - 1 if self.kind == "spreadsheet" else self.doc.part())
         self._refresh_parts()
         return False
-
-    def _on_style_selected(self, dropdown, _pspec):
-        if self._syncing or not self.doc:
-            return
-        style = PARAGRAPH_STYLES[dropdown.get_selected()][1]
-        self.doc.uno(".uno:StyleApply", _uno_args(Style=style, FamilyName="ParagraphStyles"))
-        self._set_modified(True)
-        self.view.grab_focus()
 
     def _insert_image(self):
         dialog = Gtk.FileDialog(title="Insert Image")
@@ -714,32 +556,13 @@ class DocumentWindow(Adw.ApplicationWindow):
                 file = d.open_finish(res)
             except GLib.Error:
                 return
-            self.doc.uno(".uno:InsertGraphic", _uno_args(FileName=file.get_uri()))
+            self.doc.uno(".uno:InsertGraphic", uno_args(FileName=file.get_uri()))
             self._set_modified(True)
         dialog.open(self, None, done)
 
     def _on_state_changed(self, _view, command, value):
         if command == ".uno:ModifiedStatus":
             self._set_modified(value == "true")
-            return
-        if command == ".uno:StyleApply" and self.kind == "text":
-            names = [s[1] for s in PARAGRAPH_STYLES]
-            if value in names:
-                self._syncing = True
-                self.style_dropdown.set_selected(names.index(value))
-                self._syncing = False
-            return
-        if command == ".uno:CharFontName" and value:
-            self._sync_font(value)
-            return
-        if command == ".uno:FontHeight":
-            try:
-                size = float(value)
-            except ValueError:
-                return
-            self._syncing = True
-            self.size_spin.set_value(size)
-            self._syncing = False
             return
         if command in (".uno:StatePageNumber", ".uno:StateWordCount") and self.kind == "text":
             if command == ".uno:StatePageNumber":
@@ -748,21 +571,14 @@ class DocumentWindow(Adw.ApplicationWindow):
                 self._word_status = value
             self.status_label.set_label("   ·   ".join(v for v in (self._page_status, self._word_status) if v))
             return
-        button = self._toggles.get(command)
-        if button and value in ("true", "false"):
-            self._syncing = True
-            button.set_active(value == "true")
-            self._syncing = False
-
-    def _sync_font(self, name):
-        names = [self.font_names.get_string(i) for i in range(self.font_names.get_n_items())]
-        if name not in names:
-            # A font the document uses but this system lacks: show it anyway.
-            self.font_names.append(name)
-            names.append(name)
-        self._syncing = True
-        self.font_dropdown.set_selected(names.index(name))
-        self._syncing = False
+        if command == ".uno:ToggleSheetGrid":
+            self.grid_visible = value == "true"
+            if self.grid_visible and self._grid_default_off:
+                self.doc.uno(".uno:ToggleSheetGrid")
+            self._grid_default_off = False
+            self.inspector.on_state(command, value)
+            return
+        self.fmt.on_state(command, value)
 
     def _zoom(self, factor):
         if self.view:
@@ -789,6 +605,9 @@ class DocumentWindow(Adw.ApplicationWindow):
             self.title.set_subtitle("Not saved yet")
         self.set_title(f"{name} — AceOffice")
 
+    def set_modified(self, value):
+        self._set_modified(value)
+
     def _set_modified(self, value):
         if value != self.modified:
             self.modified = value
@@ -796,7 +615,7 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     def _set_doc_actions(self, enabled):
         for name in ("save", "save-as", "export-pdf", "zoom-in", "zoom-out", "zoom-reset", "find",
-                     "cut", "copy", "paste", "select-all"):
+                     "cut", "copy", "paste", "select-all", "format-panel"):
             self.lookup_action(name).set_enabled(enabled)
 
     # --- saving -------------------------------------------------------------------

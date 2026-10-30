@@ -16,7 +16,11 @@ fi
 
 FAKE_HOME="$(mktemp -d)"
 trap 'rm -rf "$FAKE_HOME"' EXIT
-mkdir -p "$FAKE_HOME/Documents"
+mkdir -p "$FAKE_HOME/Documents" "$FAKE_HOME/.config"
+# SMOKE_THEME=1: render with your own GTK 4 theme (e.g. WhiteSur in ~/.config/gtk-4.0).
+if [ -n "${SMOKE_THEME:-}" ] && [ -d "$HOME/.config/gtk-4.0" ]; then
+    cp -rL "$HOME/.config/gtk-4.0" "$FAKE_HOME/.config/gtk-4.0"
+fi
 export OUT HOME="$FAKE_HOME" XDG_DATA_HOME="$FAKE_HOME/.local/share" \
        XDG_CONFIG_HOME="$FAKE_HOME/.config" XDG_CACHE_HOME="$FAKE_HOME/.cache"
 export PYTHONPATH="$PWD"

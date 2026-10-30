@@ -9,6 +9,7 @@ that feels at home next to the rest of your desktop.
 
 ![Writing a document](docs/screenshot-document.png)
 ![A spreadsheet with a formula](docs/screenshot-spreadsheet.png)
+![The Format sidebar's page setup](docs/screenshot-format-sidebar.png)
 
 > **Early preview (0.1).** Documents and spreadsheets work. Presentations are
 > switched off until slide rendering is fixed ([#1](https://github.com/androbot9000/aceoffice/issues/1)).
@@ -16,11 +17,15 @@ that feels at home next to the rest of your desktop.
 ## What works
 
 - **Documents:** type and format text (font, size, bold, italic, underline,
-  strikethrough, text color and highlight, alignment, lists, paragraph styles), insert
-  images, undo and redo, spell checking. The status bar shows the page and word count.
+  strikethrough, text color and highlight, alignment, line spacing, indents, lists,
+  paragraph styles), insert images, undo and redo, spell checking. The **Format sidebar**
+  (Ctrl+Shift+F) has a Document tab for paper size, orientation and margins. The status
+  bar shows the page and word count.
 - **Spreadsheets:** row and column headers (click one to select the whole row or column),
-  values and formulas, the formula bar, sheet tabs, fill color, currency and percent formats,
-  and the Σ AutoSum button.
+  values and formulas, the formula bar, sheet tabs, fill color, number formats, decimal
+  places, wrap and merge, and the Σ AutoSum button. New sheets start without gridlines;
+  turn them on per sheet in the sidebar (files you open keep their own setting). Print
+  margins, paper and orientation are in the sidebar too.
 - **Files:** open `.docx .doc .odt .rtf .txt .xlsx .xls .ods .csv`, plus Apple
   **`.pages`** and **`.numbers`** files. iWork files are imported, and the first save
   writes a Word or Excel copy next to the original. New files save as `.docx`/`.xlsx`
@@ -57,8 +62,11 @@ Ctrl+P export PDF, Ctrl+W close, Ctrl+B/I/U formatting, Ctrl+Z/Ctrl+Shift+Z undo
 | `aceoffice/docview.py` | GTK 4 widget: draws LibreOffice's tiles, the caret and selections, and forwards keyboard, mouse and clipboard |
 | `aceoffice/window.py` | Start page, toolbar, formula bar, sheet tabs, status bar, saving |
 | `aceoffice/headers.py` | Spreadsheet row and column headers |
+| `aceoffice/inspector.py` | Formatting controls and the Format sidebar, including page setup |
+| `aceoffice/widgets.py` | Colour buttons, measurement units |
+| `aceoffice/macros/` | LibreOffice Basic used where LibreOfficeKit has no command (page margins) |
 | `aceoffice/app.py` | Application, actions, starting the engine in the background |
-| `tests/smoke.sh` | End-to-end test in a headless GNOME Shell. Creates, edits, saves and reopens files and takes screenshots |
+| `tests/smoke.sh` | End-to-end test in a headless GNOME Shell. Creates, edits, saves and reopens files and takes screenshots (`SMOKE_THEME=1` renders with your own GTK theme) |
 
 LibreOffice renders each document as 256 px tiles. AceOffice caches them as GPU
 textures and redraws only the tiles LibreOffice reports as changed. A changed tile stays
