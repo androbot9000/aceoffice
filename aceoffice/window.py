@@ -450,7 +450,7 @@ class DocumentWindow(Adw.ApplicationWindow):
     def _set_part(self, n):
         if n != self.doc.part():
             self.doc.set_part(n)
-            self.view.invalidate_all()
+            self.view.invalidate_all(keep_showing=False)
             self.view.queue_resize()
         return False
 

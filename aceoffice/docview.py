@@ -53,7 +53,10 @@ class DocView(Gtk.Widget):
         self.doc = doc
         self.zoom = 1.0
         self._tiles = {}
+        self._stale = set()      # tiles LibreOffice says changed; still shown until re-rendered
         self._render_source = 0
+        self.frames = 0               # frames drawn, and frames that had to show a
+        self.placeholder_frames = 0   # blank tile (for tests)
         self._cursor = None
         self._cursor_visible = True
         self._blink_on = True
@@ -166,6 +169,7 @@ class DocView(Gtk.Widget):
 
     def _apply_zoom(self):
         self._tiles.clear()
+        self._stale.clear()
         tw = self._tile_twips()
         self.doc.set_client_zoom(TILE, tw)
 
@@ -198,35 +202,45 @@ class DocView(Gtk.Widget):
     def do_snapshot(self, snapshot):
         ox = self._offset_x()
         step = self._tile_twips() * self.ppt
-        missing = False
-        for tx, ty in self._visible_tiles():
-            tex = self._tiles.get((tx, ty))
-            rect = Graphene.Rect().init(ox + tx * step, ty * step, step, step)
+        self.frames += 1
+        missing = stale = False
+        for key in self._visible_tiles():
+            tex = self._tiles.get(key)
+            rect = Graphene.Rect().init(ox + key[0] * step, key[1] * step, step, step)
             if tex:
                 snapshot.append_texture(tex, rect)
+                stale = stale or key in self._stale
             else:
                 missing = True
                 snapshot.append_color(_WHITE, rect)
-        if missing and not self._render_source:
-            self._render_source = GLib.idle_add(self._render_pending)
+        if missing:
+            self.placeholder_frames += 1
+        if missing or stale:
+            self._schedule_render()
         self._snapshot_overlays(snapshot, ox)
+
+    def _schedule_render(self):
+        # HIGH_IDLE runs before GTK's layout and paint (HIGH_IDLE + 10/20), so fresh
+        # tiles land in the very next frame instead of one frame late.
+        if not self._render_source:
+            self._render_source = GLib.idle_add(self._render_pending, priority=GLib.PRIORITY_HIGH_IDLE)
 
     def _render_pending(self):
         self._render_source = 0
         scale = self._scale()
         tw = self._tile_twips()
         px = math.ceil(TILE * scale)
-        done = 0
-        for tx, ty in self._visible_tiles():
-            if (tx, ty) in self._tiles:
-                continue
+        visible = list(self._visible_tiles())
+        # Changed tiles first, all in one pass so an edit never shows half-updated;
+        # then tiles never rendered (scrolling), a few at a time to stay responsive.
+        todo = [k for k in visible if k in self._stale]
+        todo += [k for k in visible if k not in self._tiles][:TILES_PER_PASS]
+        for tx, ty in todo:
             buf = self.doc.paint_tile(px, px, tx * tw, ty * tw, tw, tw)
             self._tiles[(tx, ty)] = Gdk.MemoryTexture.new(
                 px, px, Gdk.MemoryFormat.B8G8R8A8_PREMULTIPLIED, GLib.Bytes.new(bytes(buf)), px * 4)
-            done += 1
-            if done >= TILES_PER_PASS:
-                break
-        if done:
+            self._stale.discard((tx, ty))
+        if todo:
             self.queue_draw()
         return False
 
@@ -254,18 +268,24 @@ class DocView(Gtk.Widget):
                                   Graphene.Rect().init(ox + x * self.ppt, y * self.ppt,
                                                        max(1.5, w * self.ppt), h * self.ppt))
 
-    def invalidate_all(self):
-        self._tiles.clear()
+    def invalidate_all(self, keep_showing=True):
+        """Re-render every tile. keep_showing=False drops them at once, for when the
+        old pixels would be wrong to show (a different sheet or slide)."""
+        if keep_showing:
+            self._stale.update(self._tiles)
+        else:
+            self._tiles.clear()
+            self._stale.clear()
+        self._schedule_render()
         self.queue_draw()
 
     def _invalidate(self, r):
         tw = self._tile_twips()
         x, y, w, h = r
-        for key in [k for k in self._tiles
-                    if k[0] * tw < x + w and (k[0] + 1) * tw > x
-                    and k[1] * tw < y + h and (k[1] + 1) * tw > y]:
-            del self._tiles[key]
-        self.queue_draw()
+        self._stale.update(k for k in self._tiles
+                           if k[0] * tw < x + w and (k[0] + 1) * tw > x
+                           and k[1] * tw < y + h and (k[1] + 1) * tw > y)
+        self._schedule_render()
 
     # --- LibreOffice callbacks -------------------------------------------------
 
@@ -304,7 +324,7 @@ class DocView(Gtk.Widget):
             self.queue_resize()
         elif kind == lok.CALLBACK_SET_PART:
             self._selection, self._graphic, self._cursor = [], None, None
-            self.invalidate_all()
+            self.invalidate_all(keep_showing=False)
             self.queue_resize()
             try:
                 self.emit("part-changed", int(payload))

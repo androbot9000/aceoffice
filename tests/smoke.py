@@ -99,12 +99,30 @@ def step_text():
     win.doc.uno(".uno:Bold")
     v.type_text("and your old Pages files too.")
     win.doc.uno(".uno:Bold")
-    GLib.timeout_add(1500, lambda: step_text_shot() or False)
+    GLib.timeout_add(1500, lambda: step_typing() or False)
+
+
+def step_typing():
+    """Type one key at a time, like a person, and count frames that showed a blank tile."""
+    v = editor_win().view
+    v.press_key(13, 1280)
+    v.placeholder_frames = v.frames = 0
+    keys = list(" Typing should never flash the page.")
+
+    def next_key():
+        if not keys:
+            GLib.timeout_add(800, lambda: step_text_shot() or False)
+            return False
+        v.type_text(keys.pop(0))
+        return True
+    GLib.timeout_add(40, next_key)
 
 
 def step_text_shot():
     win = editor_win()
     check("document marked modified", win.modified)
+    check(f"no blank tiles while typing ({win.view.placeholder_frames} of {win.view.frames} frames)",
+          win.view.frames > 20 and win.view.placeholder_frames == 0)
     shot(win, "2-document")
     path = os.path.join(DOCS, "Notes.docx")
     win._write(path)
