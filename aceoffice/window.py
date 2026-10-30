@@ -8,10 +8,11 @@ import json
 import os
 import threading
 
-from gi.repository import Adw, Gio, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 from . import lok
 from .docview import DocView
+from .headers import SheetHeaders
 
 KINDS = {
     lok.DOCTYPE_TEXT: "text",
@@ -62,7 +63,7 @@ ALIGN["presentation"] = ALIGN["text"]
 def _uno_args(**kwargs):
     out = {}
     for k, v in kwargs.items():
-        t = "long" if isinstance(v, int) else "string"
+        t = "long" if isinstance(v, int) else "float" if isinstance(v, float) else "string"
         out[k] = {"type": t, "value": v}
     return json.dumps(out)
 
@@ -253,6 +254,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.view.connect("part-changed", lambda _v, n: self._select_part(n))
         self.view.connect("edited", lambda *_: self._set_modified(True))
         self.view.connect("zoom-changed", lambda _v, z: self.zoom_label.set_label(f"{round(z * 100)}%"))
+        self.headers = None
 
         self.stack.add_named(self._build_editor(), "editor")
         self.stack.set_visible_child_name("editor")
@@ -279,26 +281,28 @@ class DocumentWindow(Adw.ApplicationWindow):
     # --- editor -------------------------------------------------------------------
 
     def _build_editor(self):
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        outer.append(self._build_format_bar())
+        editor = Adw.ToolbarView(top_bar_style=Adw.ToolbarStyle.RAISED_BORDER,
+                                 bottom_bar_style=Adw.ToolbarStyle.RAISED_BORDER)
+        editor.add_top_bar(self._build_format_bar())
         if self.kind == "spreadsheet":
-            outer.append(self._build_formula_bar())
+            editor.add_top_bar(self._build_formula_bar())
 
         self.scrolled = Gtk.ScrolledWindow(child=self.view, hexpand=True, vexpand=True,
                                            css_classes=["ace-canvas"])
         self.view.attach_scrolled(self.scrolled)
-
-        body = Gtk.Box(vexpand=True)
-        if self.kind == "presentation":
+        content = self.scrolled
+        if self.kind == "spreadsheet":
+            self.headers = SheetHeaders(self.view)
+            content = self.headers.grid(self.scrolled)
+        elif self.kind == "presentation":
+            body = Gtk.Box()
             body.append(self._build_slide_sidebar())
             body.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
-        body.append(self.scrolled)
-        outer.append(body)
-
-        if self.kind == "spreadsheet":
-            outer.append(Gtk.Separator())
-            outer.append(self._build_sheet_tabs())
-        return outer
+            body.append(self.scrolled)
+            content = body
+        editor.set_content(content)
+        editor.add_bottom_bar(self._build_status_bar())
+        return editor
 
     def _button(self, icon=None, label=None, tooltip=None, command=None, toggle=False, args=None):
         cls = Gtk.ToggleButton if toggle else Gtk.Button
@@ -323,7 +327,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         return g
 
     def _build_format_bar(self):
-        bar = Gtk.Box(spacing=10, margin_start=8, margin_end=8, margin_top=4, margin_bottom=4)
+        bar = Gtk.Box(spacing=12, css_classes=["toolbar"])
         bar.append(self._group(self._button("edit-undo-symbolic", tooltip="Undo (Ctrl+Z)", command=".uno:Undo"),
                                self._button("edit-redo-symbolic", tooltip="Redo (Ctrl+Shift+Z)", command=".uno:Redo")))
 
@@ -333,6 +337,7 @@ class DocumentWindow(Adw.ApplicationWindow):
             self.style_dropdown.connect("notify::selected", self._on_style_selected)
             bar.append(self.style_dropdown)
 
+        bar.append(self._build_font_controls())
         bar.append(self._group(
             self._button("format-text-bold-symbolic", tooltip="Bold (Ctrl+B)", command=".uno:Bold", toggle=True),
             self._button("format-text-italic-symbolic", tooltip="Italic (Ctrl+I)", command=".uno:Italic", toggle=True),
@@ -340,8 +345,7 @@ class DocumentWindow(Adw.ApplicationWindow):
                          command=".uno:Underline", toggle=True),
             self._button("format-text-strikethrough-symbolic", tooltip="Strikethrough",
                          command=".uno:Strikeout", toggle=True)))
-        bar.append(self._group(self._button(label="A−", tooltip="Smaller text", command=".uno:Shrink"),
-                               self._button(label="A+", tooltip="Bigger text", command=".uno:Grow")))
+        bar.append(self._build_color_controls())
         bar.append(self._group(*[self._button(icon, tooltip=tip, command=cmd, toggle=True)
                                  for cmd, icon, tip in ALIGN[self.kind]]))
 
@@ -363,20 +367,85 @@ class DocumentWindow(Adw.ApplicationWindow):
             bar.append(add)
             bar.append(self._image_button())
 
-        bar.append(Gtk.Box(hexpand=True))
-        self.zoom_label = Gtk.Label(label="100%", width_chars=5, css_classes=["numeric"])
+        # Narrow windows scroll the toolbar sideways instead of forcing a minimum width.
+        return Gtk.ScrolledWindow(child=bar, vscrollbar_policy=Gtk.PolicyType.NEVER,
+                                  hscrollbar_policy=Gtk.PolicyType.EXTERNAL, propagate_natural_height=True)
+
+    def _build_font_controls(self):
+        names = []
+        raw = self.doc.command_values(".uno:CharFontName")
+        try:
+            names = sorted(json.loads(raw)["commandValues"].keys(), key=str.casefold) if raw else []
+        except (ValueError, KeyError, AttributeError):
+            pass
+        self.font_names = Gtk.StringList.new(names)
+        self.font_dropdown = Gtk.DropDown(model=self.font_names, enable_search=True, tooltip_text="Font",
+                                          expression=Gtk.PropertyExpression.new(Gtk.StringObject, None, "string"))
+        self.font_dropdown.set_size_request(170, -1)
+        self.font_dropdown.connect("notify::selected", self._on_font_selected)
+
+        self.size_spin = Gtk.SpinButton.new_with_range(1, 999, 1)
+        self.size_spin.set_tooltip_text("Text size")
+        self.size_spin.set_value(12)
+        self.size_spin.connect("value-changed", self._on_size_changed)
+        box = Gtk.Box(spacing=4)
+        box.append(self.font_dropdown)
+        box.append(self.size_spin)
+        return box
+
+    def _build_color_controls(self):
+        text_cmd, fill_cmd = (".uno:Color", ".uno:BackgroundColor") if self.kind == "spreadsheet" else \
+                             (".uno:Color", ".uno:CharBackColor")
+        group = Gtk.Box(spacing=4)
+        for tip, cmd, arg, default in [("Text color", text_cmd, "Color", "#000000"),
+                                       ("Highlight" if self.kind == "text" else "Fill color",
+                                        fill_cmd, fill_cmd.split(":")[1], "#ffeb3b")]:
+            button = Gtk.ColorDialogButton(dialog=Gtk.ColorDialog(with_alpha=False), tooltip_text=tip)
+            rgba = Gdk.RGBA()
+            rgba.parse(default)
+            button.set_rgba(rgba)
+
+            def changed(b, _pspec, cmd=cmd, arg=arg):
+                c = b.get_rgba()
+                value = (round(c.red * 255) << 16) | (round(c.green * 255) << 8) | round(c.blue * 255)
+                self.doc.uno(cmd, _uno_args(**{arg: value}))
+                self._set_modified(True)
+                self.view.grab_focus()
+            button.connect("notify::rgba", changed)
+            group.append(button)
+        return group
+
+    def _on_font_selected(self, dropdown, _pspec):
+        item = dropdown.get_selected_item()
+        if self._syncing or not item:
+            return
+        self.doc.uno(".uno:CharFontName", _uno_args(**{"CharFontName.FamilyName": item.get_string()}))
+        self._set_modified(True)
+        self.view.grab_focus()
+
+    def _on_size_changed(self, spin):
+        if self._syncing:
+            return
+        self.doc.uno(".uno:FontHeight", _uno_args(**{"FontHeight.Height": float(spin.get_value())}))
+        self._set_modified(True)
+
+    def _build_status_bar(self):
+        bar = Gtk.Box(spacing=8, css_classes=["toolbar"])
+        if self.kind == "spreadsheet":
+            bar.append(self._build_sheet_tabs())
+        else:
+            self.status_label = Gtk.Label(xalign=0, hexpand=True, css_classes=["dim-label", "caption"],
+                                          ellipsize=Pango.EllipsizeMode.END)
+            bar.append(self.status_label)
+            self._page_status = self._word_status = ""
+        self.zoom_label = Gtk.Button(label="100%", tooltip_text="Actual size (Ctrl+0)",
+                                     css_classes=["flat", "numeric", "caption"], action_name="win.zoom-reset")
         out_b = self._button("zoom-out-symbolic", tooltip="Zoom out (Ctrl+−)")
         out_b.connect("clicked", lambda *_: self._zoom(1 / 1.1))
         in_b = self._button("zoom-in-symbolic", tooltip="Zoom in (Ctrl++)")
         in_b.connect("clicked", lambda *_: self._zoom(1.1))
-        bar.append(out_b)
-        bar.append(self.zoom_label)
-        bar.append(in_b)
-
-        wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        wrap.append(bar)
-        wrap.append(Gtk.Separator())
-        return wrap
+        bar.append(self._group(out_b, self.zoom_label, in_b))
+        return bar
 
     def _image_button(self):
         b = self._button("insert-image-symbolic", tooltip="Insert image…")
@@ -384,7 +453,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         return b
 
     def _build_formula_bar(self):
-        bar = Gtk.Box(spacing=6, margin_start=8, margin_end=8, margin_top=4, margin_bottom=4)
+        bar = Gtk.Box(spacing=6, css_classes=["toolbar"])
         self.cell_label = Gtk.Label(label="A1", width_chars=8, css_classes=["monospace", "dim-label"])
         bar.append(self.cell_label)
         bar.append(Gtk.Label(label="ƒx", css_classes=["dim-label"]))
@@ -393,10 +462,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         bar.append(self.formula)
         self.view.connect("formula-changed", lambda _v, f: self.formula.set_text(f))
         self.view.connect("cell-address-changed", lambda _v, a: self.cell_label.set_label(a))
-        wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        wrap.append(bar)
-        wrap.append(Gtk.Separator())
-        return wrap
+        return bar
 
     def _on_formula_activate(self, entry):
         # Typing into a selected cell replaces its contents; Enter commits it.
@@ -405,10 +471,10 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.view.press_key(13, 1280)
 
     def _build_sheet_tabs(self):
-        self.tabs = Gtk.Box(spacing=4, margin_start=6, margin_end=6, margin_top=4, margin_bottom=4)
+        self.tabs = Gtk.Box(spacing=4)
         add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="New sheet", css_classes=["flat"])
         add.connect("clicked", lambda *_: self._add_sheet())
-        row = Gtk.Box(spacing=4)
+        row = Gtk.Box(spacing=4, hexpand=True)
         row.append(add)
         row.append(Gtk.ScrolledWindow(child=self.tabs, vscrollbar_policy=Gtk.PolicyType.NEVER, hexpand=True))
         self._refresh_parts()
@@ -515,11 +581,40 @@ class DocumentWindow(Adw.ApplicationWindow):
                 self.style_dropdown.set_selected(names.index(value))
                 self._syncing = False
             return
+        if command == ".uno:CharFontName" and value:
+            self._sync_font(value)
+            return
+        if command == ".uno:FontHeight":
+            try:
+                size = float(value)
+            except ValueError:
+                return
+            self._syncing = True
+            self.size_spin.set_value(size)
+            self._syncing = False
+            return
+        if command in (".uno:StatePageNumber", ".uno:StateWordCount") and self.kind == "text":
+            if command == ".uno:StatePageNumber":
+                self._page_status = value
+            else:
+                self._word_status = value
+            self.status_label.set_label("   ·   ".join(v for v in (self._page_status, self._word_status) if v))
+            return
         button = self._toggles.get(command)
         if button and value in ("true", "false"):
             self._syncing = True
             button.set_active(value == "true")
             self._syncing = False
+
+    def _sync_font(self, name):
+        names = [self.font_names.get_string(i) for i in range(self.font_names.get_n_items())]
+        if name not in names:
+            # A font the document uses but this system lacks: show it anyway.
+            self.font_names.append(name)
+            names.append(name)
+        self._syncing = True
+        self.font_dropdown.set_selected(names.index(name))
+        self._syncing = False
 
     def _zoom(self, factor):
         if self.view:

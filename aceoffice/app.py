@@ -18,7 +18,9 @@ from .window import OPEN_PATTERNS, PRESENTATIONS_ENABLED, DocumentWindow  # noqa
 APP_ID = "io.github.androbot9000.AceOffice"
 
 CSS = """
-.ace-canvas { background-color: #e8e8eb; }
+/* Follows libadwaita's light/dark colours: a slightly deeper shade of the window. */
+.ace-canvas { background-color: color-mix(in srgb, var(--window-fg-color) 9%, var(--window-bg-color)); }
+.ace-header { background-color: alpha(currentColor, 0.04); font-size: 9pt; font-feature-settings: "tnum"; }
 .ace-new-card { min-width: 150px; }
 """
 

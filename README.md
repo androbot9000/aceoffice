@@ -15,16 +15,19 @@ that feels at home next to the rest of your desktop.
 
 ## What works
 
-- **Documents:** type and format text (bold, italic, underline, strikethrough,
-  text size, alignment, lists, paragraph styles), insert images, undo and redo.
-- **Spreadsheets:** enter values and formulas, use the formula bar, add sheets and
-  switch between them, and format cells as currency or percent with the Σ AutoSum button.
+- **Documents:** type and format text (font, size, bold, italic, underline,
+  strikethrough, text color and highlight, alignment, lists, paragraph styles), insert
+  images, undo and redo, spell checking. The status bar shows the page and word count.
+- **Spreadsheets:** row and column headers (click one to select the whole row or column),
+  values and formulas, the formula bar, sheet tabs, fill color, currency and percent formats,
+  and the Σ AutoSum button.
 - **Files:** open `.docx .doc .odt .rtf .txt .xlsx .xls .ods .csv`, plus Apple
   **`.pages`** and **`.numbers`** files. iWork files are imported, and the first save
   writes a Word or Excel copy next to the original. New files save as `.docx`/`.xlsx`
   by default (or ODF if you prefer). Export any document to PDF.
 - **Everyday stuff:** a recent files list, unsaved changes shown in the title (with a
-  prompt before closing), the system clipboard, zoom (Ctrl + scroll), HiDPI.
+  prompt before closing), the system clipboard, zoom (Ctrl + scroll), HiDPI, and light
+  and dark styles.
 
 ## Try it
 
@@ -51,13 +54,15 @@ Ctrl+P export PDF, Ctrl+W close, Ctrl+B/I/U formatting, Ctrl+Z/Ctrl+Shift+Z undo
 |---|---|
 | `aceoffice/lok.py` | ctypes bindings for the LibreOfficeKit C API |
 | `aceoffice/docview.py` | GTK 4 widget: draws LibreOffice's tiles, the caret and selections, and forwards keyboard, mouse and clipboard |
-| `aceoffice/window.py` | Start page, toolbar, formula bar, sheet tabs, saving |
+| `aceoffice/window.py` | Start page, toolbar, formula bar, sheet tabs, status bar, saving |
+| `aceoffice/headers.py` | Spreadsheet row and column headers |
 | `aceoffice/app.py` | Application, actions, starting the engine in the background |
 | `tests/smoke.sh` | End-to-end test in a headless GNOME Shell. Creates, edits, saves and reopens files and takes screenshots |
 
 LibreOffice renders each document as 256 px tiles. AceOffice caches them as GPU
-textures and redraws only the tiles LibreOffice reports as changed. The caret,
-selections and cell cursor are drawn by AceOffice on top.
+textures and redraws only the tiles LibreOffice reports as changed. A changed tile stays
+on screen until its replacement is ready, so typing never flashes; the smoke test checks
+this frame by frame. The caret, selections and cell cursor are drawn by AceOffice on top.
 
 ## Roadmap
 

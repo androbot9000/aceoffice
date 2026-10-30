@@ -46,6 +46,8 @@ class DocView(Gtk.Widget):
         "cell-address-changed": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "zoom-changed": (GObject.SignalFlags.RUN_FIRST, None, (float,)),
         "edited": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # Visible area, zoom or row/column sizes changed: spreadsheet headers redraw.
+        "geometry-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
 
     def __init__(self, doc):
@@ -139,9 +141,18 @@ class DocView(Gtk.Widget):
     def _on_scrolled(self, *_):
         x, y, w, h = self._visible()
         ox = self._offset_x()
-        self.doc.set_visible_area(int(max(0, x - ox) / self.ppt), int(y / self.ppt),
-                                  int(w / self.ppt), int(h / self.ppt))
+        self.doc.set_visible_area(*self.visible_twips())
         self.queue_draw()
+        self.emit("geometry-changed")
+
+    def visible_twips(self):
+        x, y, w, h = self._visible()
+        return (int(max(0, x - self._offset_x()) / self.ppt), int(y / self.ppt),
+                int(w / self.ppt), int(h / self.ppt))
+
+    @property
+    def cell_cursor(self):
+        return self._cell_cursor
 
     def do_measure(self, orientation, for_size):
         w, h = self._doc_px()
@@ -317,6 +328,7 @@ class DocView(Gtk.Widget):
             self._cell_cursor = _rect(payload)
             self._scroll_to(self._cell_cursor)
             self.queue_draw()
+            self.emit("geometry-changed")
         elif kind == lok.CALLBACK_STATE_CHANGED:
             self._on_state(payload)
         elif kind == lok.CALLBACK_DOCUMENT_SIZE_CHANGED:
@@ -334,6 +346,10 @@ class DocView(Gtk.Widget):
             self.emit("formula-changed", payload)
         elif kind == lok.CALLBACK_CELL_ADDRESS:
             self.emit("cell-address-changed", payload)
+        elif kind == lok.CALLBACK_INVALIDATE_HEADER:
+            self.emit("geometry-changed")
+        elif kind == lok.CALLBACK_MOUSE_POINTER:
+            self.set_cursor_from_name(payload or "default")
         return False
 
     def _on_state(self, payload):

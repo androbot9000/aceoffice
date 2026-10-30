@@ -121,6 +121,11 @@ def step_typing():
 def step_text_shot():
     win = editor_win()
     check("document marked modified", win.modified)
+    check(f"status bar shows pages and words ({win.status_label.get_label()!r})",
+          "Page 1 of 1" in win.status_label.get_label() and "words" in win.status_label.get_label())
+    font = win.font_dropdown.get_selected_item()
+    check(f"font list loaded, current font shown ({win.font_names.get_n_items()} fonts, "
+          f"{font.get_string() if font else None})", win.font_names.get_n_items() > 5 and font)
     check(f"no blank tiles while typing ({win.view.placeholder_frames} of {win.view.frames} frames)",
           win.view.frames > 20 and win.view.placeholder_frames == 0)
     shot(win, "2-document")
@@ -147,6 +152,9 @@ def step_sheet_shot():
     win = editor_win()
     check("formula bar shows formula", win.formula.get_text().upper() == "=SUM(B2:B3)")
     check("cell address shown", win.cell_label.get_label() not in ("", "A1"))
+    cols = [e[0] for e in win.headers.columns.entries[:3]]
+    rows = [e[0] for e in win.headers.rows.entries[:3]]
+    check(f"row and column headers ({cols}, {rows})", cols == ["A", "B", "C"] and rows == ["1", "2", "3"])
     print("  formula:", win.formula.get_text(), "cell:", win.cell_label.get_label(), flush=True)
     win._add_sheet()
     GLib.timeout_add(1200, lambda: step_sheet2() or False)
