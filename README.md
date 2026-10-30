@@ -25,9 +25,10 @@ that feels at home next to the rest of your desktop.
   **`.pages`** and **`.numbers`** files. iWork files are imported, and the first save
   writes a Word or Excel copy next to the original. New files save as `.docx`/`.xlsx`
   by default (or ODF if you prefer). Export any document to PDF.
-- **Everyday stuff:** a recent files list, unsaved changes shown in the title (with a
-  prompt before closing), the system clipboard, zoom (Ctrl + scroll), HiDPI, and light
-  and dark styles.
+- **Everyday stuff:** find (Ctrl+F), a right-click menu, a keyboard shortcuts window
+  (Ctrl+?), a recent files list, unsaved changes shown in the title (with a
+  prompt before closing), the system clipboard, zoom (Ctrl + scroll), HiDPI, light
+  and dark styles, and the window remembers its size.
 
 ## Try it
 

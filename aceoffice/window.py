@@ -8,7 +8,7 @@ import json
 import os
 import threading
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
+from gi.repository import Adw, Gdk, Gio, GLib, Graphene, Gtk, Pango
 
 from . import lok
 from .docview import DocView
@@ -43,6 +43,38 @@ SAVE_FORMATS = {
     "presentation": [("PowerPoint Presentation", "pptx"), ("OpenDocument Presentation", "odp")],
 }
 
+TEXT_COLORS = ["#000000", "#5e5c64", "#c01c28", "#e66100", "#c88800",
+               "#26a269", "#2190a4", "#1c71d8", "#813d9c", "#ffffff"]
+FILL_COLORS = ["#f9f06b", "#ffbe6f", "#f66151", "#8ff0a4", "#99c1f1",
+               "#dc8add", "#cdab8f", "#deddda", "#ffffff", None]
+
+
+class ColorBar(Gtk.Widget):
+    """The thin colour stripe under a colour button's glyph."""
+    __gtype_name__ = "AceColorBar"
+
+    def __init__(self, color):
+        super().__init__(width_request=18, height_request=4)
+        self.set_color(color)
+
+    def set_color(self, color):
+        self._rgba = Gdk.RGBA()
+        self._rgba.parse(color or "rgba(128,128,128,0.4)")
+        self.queue_draw()
+
+    def do_snapshot(self, snapshot):
+        snapshot.append_color(self._rgba, Graphene.Rect().init(0, 0, self.get_width(), self.get_height()))
+
+
+def _swatch_class(color):
+    return "ace-sw-" + color.lstrip("#")
+
+
+def swatch_css():
+    rules = [f".{_swatch_class(c)} {{ background: {c}; }}" for c in TEXT_COLORS + FILL_COLORS if c]
+    return "\n".join(rules)
+
+
 PARAGRAPH_STYLES = [("Body", "Default Paragraph Style"), ("Title", "Title"), ("Subtitle", "Subtitle"),
                     ("Heading 1", "Heading 1"), ("Heading 2", "Heading 2"), ("Heading 3", "Heading 3"),
                     ("Quote", "Quotations")]
@@ -63,14 +95,17 @@ ALIGN["presentation"] = ALIGN["text"]
 def _uno_args(**kwargs):
     out = {}
     for k, v in kwargs.items():
-        t = "long" if isinstance(v, int) else "float" if isinstance(v, float) else "string"
+        t = ("boolean" if isinstance(v, bool) else "long" if isinstance(v, int)
+             else "float" if isinstance(v, float) else "string")
         out[k] = {"type": t, "value": v}
     return json.dumps(out)
 
 
 class DocumentWindow(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, default_width=1100, default_height=800)
+        size = load_state().get("window", {})
+        super().__init__(application=app, default_width=size.get("width", 1100),
+                         default_height=size.get("height", 800), maximized=size.get("maximized", False))
         self.app = app
         self.doc = None
         self.view = None
@@ -105,7 +140,9 @@ class DocumentWindow(Adw.ApplicationWindow):
         view_section.append("Zoom Out", "win.zoom-out")
         view_section.append("Actual Size", "win.zoom-reset")
         main_menu.append_section(None, view_section)
+        view_section.prepend("Find…", "win.find")
         app_section = Gio.Menu()
+        app_section.append("Keyboard Shortcuts", "app.shortcuts")
         app_section.append("About AceOffice", "app.about")
         main_menu.append_section(None, app_section)
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=main_menu,
@@ -132,7 +169,10 @@ class DocumentWindow(Adw.ApplicationWindow):
 
         for name, cb in [("save", self.save), ("save-as", self.save_as), ("export-pdf", self.export_pdf),
                          ("zoom-in", lambda: self._zoom(1.1)), ("zoom-out", lambda: self._zoom(1 / 1.1)),
-                         ("zoom-reset", lambda: self._zoom(None))]:
+                         ("zoom-reset", lambda: self._zoom(None)), ("find", self._show_find),
+                         ("cut", lambda: self.view.cut()), ("copy", lambda: self.view.copy()),
+                         ("paste", lambda: self.view.paste()),
+                         ("select-all", lambda: self.doc.uno(".uno:SelectAll"))]:
             action = Gio.SimpleAction(name=name)
             action.connect("activate", lambda _a, _p, cb=cb: cb())
             self.add_action(action)
@@ -286,6 +326,9 @@ class DocumentWindow(Adw.ApplicationWindow):
         editor.add_top_bar(self._build_format_bar())
         if self.kind == "spreadsheet":
             editor.add_top_bar(self._build_formula_bar())
+        editor.add_top_bar(self._build_find_bar())
+        self.view.connect("context-menu", self._on_context_menu)
+        self.view.connect("search-not-found", lambda *_: self._set_find_status("Not found"))
 
         self.scrolled = Gtk.ScrolledWindow(child=self.view, hexpand=True, vexpand=True,
                                            css_classes=["ace-canvas"])
@@ -394,26 +437,60 @@ class DocumentWindow(Adw.ApplicationWindow):
         return box
 
     def _build_color_controls(self):
-        text_cmd, fill_cmd = (".uno:Color", ".uno:BackgroundColor") if self.kind == "spreadsheet" else \
-                             (".uno:Color", ".uno:CharBackColor")
+        fill_cmd = ".uno:BackgroundColor" if self.kind == "spreadsheet" else ".uno:CharBackColor"
         group = Gtk.Box(spacing=4)
-        for tip, cmd, arg, default in [("Text color", text_cmd, "Color", "#000000"),
-                                       ("Highlight" if self.kind == "text" else "Fill color",
-                                        fill_cmd, fill_cmd.split(":")[1], "#ffeb3b")]:
-            button = Gtk.ColorDialogButton(dialog=Gtk.ColorDialog(with_alpha=False), tooltip_text=tip)
-            rgba = Gdk.RGBA()
-            rgba.parse(default)
-            button.set_rgba(rgba)
-
-            def changed(b, _pspec, cmd=cmd, arg=arg):
-                c = b.get_rgba()
-                value = (round(c.red * 255) << 16) | (round(c.green * 255) << 8) | round(c.blue * 255)
-                self.doc.uno(cmd, _uno_args(**{arg: value}))
-                self._set_modified(True)
-                self.view.grab_focus()
-            button.connect("notify::rgba", changed)
-            group.append(button)
+        group.append(self._color_control("A", "Text color", ".uno:Color", "Color", "#c01c28", TEXT_COLORS))
+        group.append(self._color_control("ab", "Highlight" if self.kind == "text" else "Fill color",
+                                         fill_cmd, fill_cmd.split(":")[1], "#f9f06b", FILL_COLORS))
         return group
+
+    def _color_control(self, glyph, tip, command, arg, default, palette):
+        """A split button: the face applies the last colour, the arrow opens a palette."""
+        current = [default]
+
+        bar = ColorBar(default)
+        face = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1, valign=Gtk.Align.CENTER)
+        face.append(Gtk.Label(label=glyph, css_classes=["heading"]))
+        face.append(bar)
+
+        def apply(color):
+            current[0] = color
+            bar.set_color(color)
+            value = -1 if color is None else int(color[1:], 16)   # -1: no colour / automatic
+            self.doc.uno(command, _uno_args(**{arg: value}))
+            self._set_modified(True)
+            self.view.grab_focus()
+
+        split = Adw.SplitButton(child=face, tooltip_text=tip, dropdown_tooltip=f"Choose {tip.lower()}")
+        split.connect("clicked", lambda *_: apply(current[0]))
+
+        popover = Gtk.Popover()
+        grid = Gtk.Grid(row_spacing=6, column_spacing=6, margin_top=6, margin_bottom=6,
+                        margin_start=6, margin_end=6)
+        for n, color in enumerate(palette):
+            swatch = Gtk.Button(css_classes=["ace-swatch"] + ([_swatch_class(color)] if color else ["ace-swatch-none"]),
+                                tooltip_text=color or "None")
+            swatch.connect("clicked", lambda _b, c=color: (popover.popdown(), apply(c)))
+            grid.attach(swatch, n % 5, n // 5, 1, 1)
+        custom = Gtk.Button(label="Custom…", css_classes=["flat"])
+
+        def choose(_b):
+            popover.popdown()
+            rgba = Gdk.RGBA()
+            rgba.parse(current[0] or "#000000")
+
+            def done(dialog, res):
+                try:
+                    c = dialog.choose_rgba_finish(res)
+                except GLib.Error:
+                    return
+                apply("#%02x%02x%02x" % (round(c.red * 255), round(c.green * 255), round(c.blue * 255)))
+            Gtk.ColorDialog(with_alpha=False).choose_rgba(self, rgba, None, done)
+        custom.connect("clicked", choose)
+        grid.attach(custom, 0, 2, 5, 1)
+        popover.set_child(grid)
+        split.set_popover(popover)
+        return split
 
     def _on_font_selected(self, dropdown, _pspec):
         item = dropdown.get_selected_item()
@@ -428,6 +505,77 @@ class DocumentWindow(Adw.ApplicationWindow):
             return
         self.doc.uno(".uno:FontHeight", _uno_args(**{"FontHeight.Height": float(spin.get_value())}))
         self._set_modified(True)
+
+    # --- find ---------------------------------------------------------------------
+
+    def _build_find_bar(self):
+        self.find_entry = Gtk.SearchEntry(placeholder_text="Find in document", width_chars=30)
+        self.find_entry.connect("activate", lambda *_: self._find(backward=False))
+        self.find_entry.connect("next-match", lambda *_: self._find(backward=False))
+        self.find_entry.connect("previous-match", lambda *_: self._find(backward=True))
+        # "changed" fires at once; "search-changed" is delayed and could land after the result.
+        self.find_entry.connect("changed", lambda *_: self._set_find_status(""))
+        self.find_entry.connect("stop-search", lambda *_: self._hide_find())
+        prev_b = Gtk.Button(icon_name="go-up-symbolic", tooltip_text="Previous (Shift+Enter)")
+        prev_b.connect("clicked", lambda *_: self._find(backward=True))
+        next_b = Gtk.Button(icon_name="go-down-symbolic", tooltip_text="Next (Enter)")
+        next_b.connect("clicked", lambda *_: self._find(backward=False))
+        self._find_status = Gtk.Label(css_classes=["dim-label", "caption"], width_chars=10)
+        box = Gtk.Box(spacing=6)
+        box.append(self.find_entry)
+        box.append(self._group(prev_b, next_b))
+        box.append(self._find_status)
+        self.find_bar = Gtk.SearchBar(child=box, show_close_button=True)
+        self.find_bar.connect_entry(self.find_entry)
+        return self.find_bar
+
+    def _set_find_status(self, text):
+        self._find_status.set_label(text)
+        if text:
+            self.find_entry.add_css_class("error")
+        else:
+            self.find_entry.remove_css_class("error")
+
+    def _show_find(self):
+        text = self.view.doc.selected_text() if self.view else None
+        if text and "\n" not in text and len(text) < 100:
+            self.find_entry.set_text(text)
+        self.find_bar.set_search_mode(True)
+        self.find_entry.grab_focus()
+
+    def _hide_find(self):
+        self.find_bar.set_search_mode(False)
+        self.view.grab_focus()
+
+    def _find(self, backward):
+        text = self.find_entry.get_text()
+        if not text:
+            return
+        self._set_find_status("")
+        self.doc.uno(".uno:ExecuteSearch", _uno_args(**{
+            "SearchItem.SearchString": text, "SearchItem.Backward": backward,
+            "SearchItem.Command": 0}))
+
+    # --- context menu ------------------------------------------------------------
+
+    def _on_context_menu(self, view, x, y):
+        menu = Gio.Menu()
+        edit = Gio.Menu()
+        edit.append("Cut", "win.cut")
+        edit.append("Copy", "win.copy")
+        edit.append("Paste", "win.paste")
+        menu.append_section(None, edit)
+        more = Gio.Menu()
+        more.append("Select All", "win.select-all")
+        more.append("Find…", "win.find")
+        menu.append_section(None, more)
+        popover = Gtk.PopoverMenu(menu_model=menu, has_arrow=False, halign=Gtk.Align.START)
+        popover.set_parent(view)
+        rect = Gdk.Rectangle()
+        rect.x, rect.y, rect.width, rect.height = int(x), int(y), 1, 1
+        popover.set_pointing_to(rect)
+        popover.connect("closed", lambda p: GLib.idle_add(p.unparent))
+        popover.popup()
 
     def _build_status_bar(self):
         bar = Gtk.Box(spacing=8, css_classes=["toolbar"])
@@ -647,7 +795,8 @@ class DocumentWindow(Adw.ApplicationWindow):
             self._update_title()
 
     def _set_doc_actions(self, enabled):
-        for name in ("save", "save-as", "export-pdf", "zoom-in", "zoom-out", "zoom-reset"):
+        for name in ("save", "save-as", "export-pdf", "zoom-in", "zoom-out", "zoom-reset", "find",
+                     "cut", "copy", "paste", "select-all"):
             self.lookup_action(name).set_enabled(enabled)
 
     # --- saving -------------------------------------------------------------------
@@ -724,6 +873,8 @@ class DocumentWindow(Adw.ApplicationWindow):
     # --- closing --------------------------------------------------------------------
 
     def _on_close_request(self, _win):
+        save_state(window={"width": self.get_width(), "height": self.get_height(),
+                           "maximized": self.is_maximized()})
         if not (self.doc and self.modified):
             self._dispose_doc()
             return False
@@ -751,3 +902,28 @@ class DocumentWindow(Adw.ApplicationWindow):
         if self.doc:
             self.doc.destroy()
             self.doc = None
+
+
+# --- small persisted UI state (window size) ------------------------------------------
+
+def _state_path():
+    return os.path.join(GLib.get_user_config_dir(), "aceoffice", "state.json")
+
+
+def load_state():
+    try:
+        with open(_state_path()) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(**changes):
+    state = load_state()
+    state.update(changes)
+    try:
+        os.makedirs(os.path.dirname(_state_path()), exist_ok=True)
+        with open(_state_path(), "w") as f:
+            json.dump(state, f)
+    except OSError:
+        pass

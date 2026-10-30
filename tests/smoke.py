@@ -14,6 +14,7 @@ gi.require_version("Gsk", "4.0")
 from gi.repository import GLib, Gsk, Gtk  # noqa: E402
 
 from aceoffice import app as appmod  # noqa: E402
+appmod.Adw = __import__('gi.repository.Adw', fromlist=['Adw'])
 
 OUT = sys.argv[1]
 os.makedirs(OUT, exist_ok=True)
@@ -118,6 +119,48 @@ def step_typing():
     GLib.timeout_add(40, next_key)
 
 
+def step_find_and_menu(win):
+    """Find a word, then search for one that isn't there; and open the colour palette."""
+    found = []
+    win.view.connect("search-not-found", lambda *_: found.append("missing"))
+    win.activate_action("win.find")
+    win.find_entry.set_text("Pages")
+    win._find(backward=False)
+    loop_until(lambda: win.view._selection, 3000)
+    check("find selects the match", bool(win.view._selection)
+          and (win.doc.selected_text() or "").strip() == "Pages")
+    win.find_entry.set_text("zebra")
+    win._find(backward=False)
+    loop_until(lambda: found, 3000)
+    check("find reports a missing word", found == ["missing"] and win._find_status.get_label() == "Not found")
+    loop_until(lambda: False, 500)   # let the find bar finish revealing
+    check("'Not found' still shown after the entry settles", win._find_status.get_label() == "Not found")
+    shot(win, "2b-find")
+    win._hide_find()
+    for b in iter_widgets(win):
+        if isinstance(b, appmod.Adw.SplitButton) and b.get_tooltip_text() == "Highlight":
+            b.get_popover().popup()
+            loop_until(lambda: False, 400)
+            shot(win, "2c-palette")
+            b.get_popover().popdown()
+            break
+
+
+def iter_widgets(w):
+    child = w.get_first_child()
+    while child:
+        yield child
+        yield from iter_widgets(child)
+        child = child.get_next_sibling()
+
+
+def loop_until(pred, ms):
+    ctx = GLib.MainContext.default()
+    end = GLib.get_monotonic_time() + ms * 1000
+    while not pred() and GLib.get_monotonic_time() < end:
+        ctx.iteration(False)
+
+
 def step_text_shot():
     win = editor_win()
     check("document marked modified", win.modified)
@@ -129,6 +172,7 @@ def step_text_shot():
     check(f"no blank tiles while typing ({win.view.placeholder_frames} of {win.view.frames} frames)",
           win.view.frames > 20 and win.view.placeholder_frames == 0)
     shot(win, "2-document")
+    step_find_and_menu(win)
     path = os.path.join(DOCS, "Notes.docx")
     win._write(path)
     check("saved docx", os.path.exists(path) and os.path.getsize(path) > 1000)
@@ -185,6 +229,13 @@ def step_reopen():
     win = editor_win()
     check("reopened saved docx", win.kind == "text")
     shot(win, "5-reopened")
+    try:
+        app.shortcuts()
+        ok = True
+    except Exception as e:  # noqa: BLE001
+        print("  shortcuts:", e, flush=True)
+        ok = False
+    check("keyboard shortcuts dialog opens", ok)
     finish()
 
 

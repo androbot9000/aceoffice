@@ -13,7 +13,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from . import __version__, lok  # noqa: E402
-from .window import OPEN_PATTERNS, PRESENTATIONS_ENABLED, DocumentWindow  # noqa: E402
+from .window import OPEN_PATTERNS, PRESENTATIONS_ENABLED, DocumentWindow, swatch_css  # noqa: E402
 
 APP_ID = "io.github.androbot9000.AceOffice"
 
@@ -22,7 +22,22 @@ CSS = """
 .ace-canvas { background-color: color-mix(in srgb, var(--window-fg-color) 9%, var(--window-bg-color)); }
 .ace-header { background-color: alpha(currentColor, 0.04); font-size: 9pt; font-feature-settings: "tnum"; }
 .ace-new-card { min-width: 150px; }
+.ace-swatch { min-width: 24px; min-height: 24px; padding: 0; border-radius: 6px;
+              box-shadow: inset 0 0 0 1px alpha(black, 0.15); }
+.ace-swatch-none { background: linear-gradient(to top right, transparent 46%, #c01c28 48%, #c01c28 52%, transparent 54%); }
 """
+
+
+SHORTCUTS = [
+    ("Files", [("New document", "<Ctrl>n"), ("Open", "<Ctrl>o"), ("Save", "<Ctrl>s"),
+               ("Save as", "<Ctrl><Shift>s"), ("Export as PDF", "<Ctrl>p"), ("Close window", "<Ctrl>w"),
+               ("Quit", "<Ctrl>q")]),
+    ("Editing", [("Undo", "<Ctrl>z"), ("Redo", "<Ctrl><Shift>z"), ("Cut", "<Ctrl>x"), ("Copy", "<Ctrl>c"),
+                 ("Paste", "<Ctrl>v"), ("Select all", "<Ctrl>a"), ("Find", "<Ctrl>f")]),
+    ("Formatting", [("Bold", "<Ctrl>b"), ("Italic", "<Ctrl>i"), ("Underline", "<Ctrl>u")]),
+    ("View", [("Zoom in", "<Ctrl>plus"), ("Zoom out", "<Ctrl>minus"), ("Actual size", "<Ctrl>0"),
+              ("Keyboard shortcuts", "<Ctrl>question")]),
+]
 
 
 class AceOfficeApp(Adw.Application):
@@ -45,7 +60,7 @@ class AceOfficeApp(Adw.Application):
         Gtk.Window.set_default_icon_name(APP_ID)
 
         css = Gtk.CssProvider()
-        css.load_from_string(CSS) if hasattr(css, "load_from_string") else css.load_from_data(CSS.encode())
+        css.load_from_string(CSS + swatch_css())
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
@@ -55,6 +70,7 @@ class AceOfficeApp(Adw.Application):
             ("new-presentation", lambda: self.new("presentation"), []),
             ("open", self.open_dialog, ["<Ctrl>o"]),
             ("about", self.about, []),
+            ("shortcuts", self.shortcuts, ["<Ctrl>question"]),
             ("quit", self.quit_all, ["<Ctrl>q"]),
         ]:
             action = Gio.SimpleAction(name=name)
@@ -65,7 +81,7 @@ class AceOfficeApp(Adw.Application):
         for action, accels in [("win.save", ["<Ctrl>s"]), ("win.save-as", ["<Ctrl><Shift>s"]),
                                ("win.export-pdf", ["<Ctrl>p"]), ("win.zoom-in", ["<Ctrl>plus", "<Ctrl>equal"]),
                                ("win.zoom-out", ["<Ctrl>minus"]), ("win.zoom-reset", ["<Ctrl>0"]),
-                               ("window.close", ["<Ctrl>w"])]:
+                               ("win.find", ["<Ctrl>f"]), ("window.close", ["<Ctrl>w"])]:
             self.set_accels_for_action(action, accels)
 
         # Starting LibreOffice takes a few seconds; do it while the start page is up.
@@ -167,6 +183,15 @@ class AceOfficeApp(Adw.Application):
         if details:
             about.set_debug_info(details)
         about.present(self.get_active_window())
+
+    def shortcuts(self):
+        dialog = Adw.ShortcutsDialog()
+        for title, items in SHORTCUTS:
+            section = Adw.ShortcutsSection(title=title)
+            for label, accel in items:
+                section.add(Adw.ShortcutsItem(title=label, accelerator=accel))
+            dialog.add(section)
+        dialog.present(self.get_active_window())
 
     def quit_all(self):
         for win in list(self.get_windows()):

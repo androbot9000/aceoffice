@@ -46,6 +46,8 @@ class DocView(Gtk.Widget):
         "cell-address-changed": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "zoom-changed": (GObject.SignalFlags.RUN_FIRST, None, (float,)),
         "edited": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "context-menu": (GObject.SignalFlags.RUN_FIRST, None, (float, float)),
+        "search-not-found": (GObject.SignalFlags.RUN_FIRST, None, ()),
         # Visible area, zoom or row/column sizes changed: spreadsheet headers redraw.
         "geometry-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
@@ -320,7 +322,11 @@ class DocView(Gtk.Widget):
             self.queue_draw()
         elif kind == lok.CALLBACK_TEXT_SELECTION:
             self._selection = [r for r in (_rect(p) for p in payload.split(";")) if r] if payload else []
+            if self._selection:
+                self._scroll_to(self._selection[0])   # e.g. a search result off screen
             self.queue_draw()
+        elif kind == lok.CALLBACK_SEARCH_NOT_FOUND:
+            self.emit("search-not-found")
         elif kind == lok.CALLBACK_GRAPHIC_SELECTION:
             self._graphic = _rect(payload)
             self.queue_draw()
@@ -439,9 +445,11 @@ class DocView(Gtk.Widget):
             if lower == Gdk.KEY_v:
                 self.paste()
                 return True
-            # Leave the app's own shortcuts (new, open, save, print, close, zoom) to the window.
-            if lower in (Gdk.KEY_n, Gdk.KEY_o, Gdk.KEY_s, Gdk.KEY_w, Gdk.KEY_q, Gdk.KEY_p,
-                         Gdk.KEY_plus, Gdk.KEY_equal, Gdk.KEY_minus, Gdk.KEY_0):
+            # Leave the app's own shortcuts (new, open, save, print, close, find, zoom, help)
+            # to the window.
+            if lower in (Gdk.KEY_n, Gdk.KEY_o, Gdk.KEY_s, Gdk.KEY_w, Gdk.KEY_q, Gdk.KEY_p, Gdk.KEY_f,
+                         Gdk.KEY_plus, Gdk.KEY_equal, Gdk.KEY_minus, Gdk.KEY_0,
+                         Gdk.KEY_question, Gdk.KEY_slash):
                 return False
         t = keys.translate(keyval, state)
         if t is None:
@@ -496,6 +504,9 @@ class DocView(Gtk.Widget):
 
     def _on_pressed(self, gesture, n_press, x, y):
         self.grab_focus()
+        if gesture.get_current_button() == 3:
+            self.emit("context-menu", x, y)
+            return
         button = {1: lok.MOUSE_LEFT, 2: lok.MOUSE_MIDDLE}.get(gesture.get_current_button())
         if not button:
             return
