@@ -206,8 +206,7 @@ def step_text_shot():
 
 def step_sheet():
     win = editor_win()
-    loop_until(lambda: win.grid_visible is False, 2000)
-    check("new spreadsheet starts without gridlines", win.grid_visible is False)
+    check("new spreadsheet shows gridlines", win.grid_visible is True)
     v = win.view
     v.grab_focus()
     v.type_text("Item\tCost\n")
@@ -232,16 +231,17 @@ def step_sheet_shot():
 def step_sheet2():
     win = editor_win()
     check("added a second sheet", win.doc.parts() == 2)
-    check("the new sheet has no gridlines either", win.grid_visible is False)
+    check("the new sheet shows gridlines too", win.grid_visible is True)
     win.activate_action("win.format-panel")
     win.inspector.stack.set_visible_child_name("sheet")
     loop_until(lambda: False, 800)
     shot(win, "3b-inspector-sheet")
-    win.inspector.grid_switch.set_active(True)
-    loop_until(lambda: win.grid_visible, 2000)
-    check("gridlines switch turns them on", win.grid_visible is True)
     win.inspector.grid_switch.set_active(False)
     loop_until(lambda: not win.grid_visible, 2000)
+    check("gridlines switch turns them off", win.grid_visible is False)
+    win.inspector.grid_switch.set_active(True)
+    loop_until(lambda: win.grid_visible, 2000)
+    check("and back on", win.grid_visible is True)
     win.activate_action("win.format-panel")
     shot(win, "3-spreadsheet")
     win._write(os.path.join(DOCS, "Budget.xlsx"))

@@ -59,7 +59,6 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.modified = False
         self._syncing = False
         self.grid_visible = True
-        self._grid_default_off = False   # hide gridlines on the next sheet LibreOffice reports
 
         self.title = Adw.WindowTitle(title="AceOffice")
         header = Adw.HeaderBar(title_widget=self.title)
@@ -239,8 +238,6 @@ class DocumentWindow(Adw.ApplicationWindow):
         if path:
             Gtk.RecentManager.get_default().add_item(Gio.File.new_for_path(path).get_uri())
 
-        # Gridlines are saved per sheet, so files keep their own setting; new ones start without.
-        self._grid_default_off = kind == "spreadsheet" and path is None
         self.view = DocView(doc)
         self.view.connect("state-changed", self._on_state_changed)
         self.view.connect("part-changed", lambda _v, n: self._select_part(n))
@@ -532,7 +529,6 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     def _add_sheet(self):
         n = self.doc.parts()
-        self._grid_default_off = True
         self.doc.uno(".uno:Insert", uno_args(Name="", Index=n + 1))
         self._set_modified(True)
         GLib.timeout_add(300, self._after_part_added)
@@ -573,9 +569,6 @@ class DocumentWindow(Adw.ApplicationWindow):
             return
         if command == ".uno:ToggleSheetGrid":
             self.grid_visible = value == "true"
-            if self.grid_visible and self._grid_default_off:
-                self.doc.uno(".uno:ToggleSheetGrid")
-            self._grid_default_off = False
             self.inspector.on_state(command, value)
             return
         self.fmt.on_state(command, value)

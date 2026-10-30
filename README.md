@@ -23,9 +23,8 @@ that feels at home next to the rest of your desktop.
   bar shows the page and word count.
 - **Spreadsheets:** row and column headers (click one to select the whole row or column),
   values and formulas, the formula bar, sheet tabs, fill color, number formats, decimal
-  places, wrap and merge, and the Σ AutoSum button. New sheets start without gridlines;
-  turn them on per sheet in the sidebar (files you open keep their own setting). Print
-  margins, paper and orientation are in the sidebar too.
+  places, wrap and merge, and the Σ AutoSum button. Gridlines can be hidden per sheet
+  in the sidebar. Print margins, paper and orientation are in the sidebar too.
 - **Files:** open `.docx .doc .odt .rtf .txt .xlsx .xls .ods .csv`, plus Apple
   **`.pages`** and **`.numbers`** files. iWork files are imported, and the first save
   writes a Word or Excel copy next to the original. New files save as `.docx`/`.xlsx`
