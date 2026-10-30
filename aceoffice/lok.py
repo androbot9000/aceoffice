@@ -160,6 +160,20 @@ class LOKError(RuntimeError):
     pass
 
 
+def _point_liblangtag_at_runtime(install):
+    """An unpacked runtime (tools/dev-runtime.sh) keeps liblangtag's data under its
+    own usr/share, but the library only looks in /usr/share unless told otherwise."""
+    datadir = os.path.normpath(os.path.join(install, "..", "..", "..", "share", "liblangtag"))
+    if datadir == "/usr/share/liblangtag" or not os.path.isdir(datadir):
+        return
+    try:
+        langtag = ctypes.CDLL("liblangtag.so.1")
+    except OSError:
+        return
+    langtag.lt_db_set_datadir.argtypes = [c_char_p]
+    langtag.lt_db_set_datadir(datadir.encode())
+
+
 # --- wrappers ---------------------------------------------------------------
 
 class Office:
@@ -185,6 +199,10 @@ class Office:
             if os.path.exists(p):
                 lib = ctypes.CDLL(p, mode=ctypes.RTLD_GLOBAL)
                 break
+        _point_liblangtag_at_runtime(install)
+        # LibreOfficeKit turns spelling and hyphenation off unless languages are listed.
+        lang = (os.environ.get("LANG") or "en_US").split(".")[0]
+        os.environ.setdefault("LOK_ALLOWLIST_LANGUAGES", " ".join(dict.fromkeys([lang, "en_US"])))
         hook = lib.libreofficekit_hook_2
         hook.restype = _P
         hook.argtypes = [c_char_p, c_char_p]
