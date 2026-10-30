@@ -158,7 +158,7 @@ class AceOfficeApp(Adw.Application):
         details = f"Document engine: LibreOfficeKit\n{engine}" if engine else None
         about = Adw.AboutDialog(application_name="AceOffice", application_icon=APP_ID,
                                 version=__version__, license_type=Gtk.License.MPL_2_0,
-                                developer_name="Ayres Capital",
+                                developer_name="AceOffice contributors",
                                 website="https://github.com/androbot9000/aceoffice",
                                 issue_url="https://github.com/androbot9000/aceoffice/issues",
                                 comments="A friendly office suite for people leaving the Apple ecosystem.")
