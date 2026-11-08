@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This Source Code Form is subject to the terms of the Mozilla Public
+   - License, v. 2.0. If a copy of the MPL was not distributed with this
+   - file, You can obtain one at https://mozilla.org/MPL/2.0/. -->
+<component type="desktop-application">
+  <id>io.github.androbot9000.AceOffice</id>
+  <name>AceOffice</name>
+  <summary>Documents, spreadsheets and presentations, the friendly way</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MPL-2.0</project_license>
+  <developer id="io.github.androbot9000">
+    <name>AceOffice contributors</name>
+  </developer>
+  <description>
+    <p>
+      AceOffice is an office suite for people coming from Pages, Numbers and Keynote. It opens
+      Word, Excel and PowerPoint files (and your old iWork files), with a clean toolbar, a format
+      sidebar, templates and page thumbnails. LibreOffice does the work underneath.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.androbot9000.AceOffice.desktop</launchable>
+  <url type="homepage">https://github.com/androbot9000/aceoffice</url>
+  <url type="bugtracker">https://github.com/androbot9000/aceoffice/issues</url>
+  <content_rating type="oars-1.1"/>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/androbot9000/aceoffice/main/docs/screenshot-document.png</image>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/androbot9000/aceoffice/main/docs/screenshot-presentation.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="0.2.0" date="2026-11-08">
+      <description><p>Presentations: slide navigator, layouts, themes and Play. Ships LibreOffice 26.2.7.</p></description>
+    </release>
+  </releases>
+</component>

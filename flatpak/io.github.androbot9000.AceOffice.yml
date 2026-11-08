@@ -1,0 +1,71 @@
+# AceOffice as a Flatpak, with its own LibreOffice: The Document Foundation's 26.2.7
+# build (Ubuntu's own paints slides blank through LibreOfficeKit; issue #1) and the
+# Noto Sans and Serif fonts the templates use. Build and install for yourself with
+#   tools/build-flatpak.sh
+app-id: io.github.androbot9000.AceOffice
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: aceoffice
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Documents live anywhere in your home folder, and LibreOffice writes a lock file
+  # beside each file it has open, which the file-chooser portal alone can't allow.
+  - --filesystem=home
+
+modules:
+  - name: libreoffice
+    buildsystem: simple
+    build-options:
+      no-debuginfo: true
+      strip: false
+    sources:
+      - type: file
+        url: https://downloadarchive.documentfoundation.org/libreoffice/old/26.2.7.3/deb/x86_64/LibreOffice_26.2.7.3_Linux_x86-64_deb.tar.gz
+        mirror-urls:
+          - https://download.documentfoundation.org/libreoffice/stable/26.2.7/deb/x86_64/LibreOffice_26.2.7_Linux_x86-64_deb.tar.gz
+        dest-filename: libreoffice.tar.gz
+        sha256: 8cd04a88396a9230264ff784ec89cc090cbfd0960c192483ba2b80fa53939416
+      - type: file
+        path: ../tools/unpack-libreoffice.sh
+    build-commands:
+      - bash unpack-libreoffice.sh libreoffice.tar.gz /app/libreoffice
+      # Every library LibreOffice links to must come from the runtime or LibreOffice itself.
+      - "! LD_LIBRARY_PATH=/app/libreoffice/program ldd /app/libreoffice/program/libmergedlo.so | grep 'not found'"
+
+  - name: noto-fonts
+    buildsystem: simple
+    sources:
+      - type: archive
+        url: https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip
+        sha256: 0c34df072a3fa7efbb7cbf34950e1f971a4447cffe365d3a359e2d4089b958f5
+        dest: sans
+      - type: archive
+        url: https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSerif-v2.015/NotoSerif-v2.015.zip
+        sha256: 0e9a43c8a4b94ac76f55069ed1d7385bbcaf6b99527a94deb5619e032b7e76c1
+        dest: serif
+    build-commands:
+      - install -Dm644 -t /app/share/fonts/noto sans/hinted/ttf/*.ttf serif/hinted/ttf/*.ttf
+
+  - name: aceoffice
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - build
+          - .flatpak-builder
+          - docs
+    build-commands:
+      - mkdir -p /app/share/aceoffice
+      - cp -r aceoffice /app/share/aceoffice/
+      - find /app/share/aceoffice -name __pycache__ -prune -exec rm -rf {} +
+      - python3 -m compileall -q /app/share/aceoffice/aceoffice
+      - install -Dm755 flatpak/aceoffice.sh /app/bin/aceoffice
+      - sed 's#@EXEC@#aceoffice#' data/io.github.androbot9000.AceOffice.desktop.in > io.github.androbot9000.AceOffice.desktop
+      - install -Dm644 -t /app/share/applications io.github.androbot9000.AceOffice.desktop
+      - install -Dm644 -t /app/share/icons/hicolor/scalable/apps data/io.github.androbot9000.AceOffice.svg
+      - install -Dm644 -t /app/share/metainfo data/io.github.androbot9000.AceOffice.metainfo.xml
