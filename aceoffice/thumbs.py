@@ -4,7 +4,7 @@
 
 """Page thumbnails for the document manager and the template chooser.
 
-LibreOffice renders the first page (or the top of the first sheet) on a worker
+LibreOffice renders the first page (the top of the first sheet, or the first slide) on a worker
 thread; the PNG is cached under ~/.cache/aceoffice/thumbnails, keyed by the
 file's path, size and modification time, so each file is rendered once.
 """
@@ -93,7 +93,15 @@ def _first_page(doc):
 
 
 def render(office, path, out):
-    doc = office.load(path)
+    # Render from a copy, so LibreOffice leaves no lock file beside the user's document
+    # (and a file open elsewhere, or read-only, renders all the same).
+    from .window import private_copy
+    copy = private_copy(path)
+    try:
+        doc = office.load(copy)
+    except Exception:
+        os.unlink(copy)
+        raise
     try:
         doc.initialize_for_rendering()
         if doc.doc_type() == lok.DOCTYPE_SPREADSHEET and doc.part() != 0:
@@ -103,9 +111,13 @@ def render(office, path, out):
             return False
         pw = WIDTH
         ph = max(1, round(WIDTH * th / tw))
-        buf = doc.paint_tile(pw, ph, x, y, tw, th)
+        if doc.doc_type() == lok.DOCTYPE_PRESENTATION:
+            buf = doc.paint_part_tile(0, pw, ph, x, y, tw, th)     # the first slide
+        else:
+            buf = doc.paint_tile(pw, ph, x, y, tw, th)
     finally:
         doc.destroy()
+        os.unlink(copy)
     if not any(bytes(buf)[3::4][:: max(1, pw * ph // 4096)]):
         return False                     # fully transparent: nothing rendered
     texture = Gdk.MemoryTexture.new(pw, ph, Gdk.MemoryFormat.B8G8R8A8_PREMULTIPLIED,

@@ -15,6 +15,7 @@ from .docview import DocView
 from .headers import SheetHeaders
 from .inspector import Formatting, Inspector
 from .manager import StartPage, TemplateChooser
+from .slides import Presenter, SlideNavigator
 from .tools import Tools, tool_button
 from .lok import uno_args
 
@@ -28,9 +29,31 @@ KINDS = {
 # coming from iWork, who mostly share files with Word/Excel/PowerPoint users.
 DEFAULT_EXT = {"text": "docx", "spreadsheet": "xlsx", "presentation": "pptx"}
 
-# LibreOfficeKit 26.2 returns blank tiles for slides (see issue #1), so presentations
-# are switched off until that's solved. The slide sidebar below is ready for it.
-PRESENTATIONS_ENABLED = False
+# Slide layouts (LibreOffice's AutoLayout numbers), as offered by Add Slide and the Slide tab.
+LAYOUTS = [("Title", 0), ("Title & Bullets", 1), ("Title & Two Columns", 3), ("Title Only", 19),
+           ("Centered Text", 32), ("Blank", 20)]
+
+
+def private_copy(path):
+    """Copy path into AceOffice's cache, for LibreOffice to open without touching the original
+    (no lock file beside it, and a read-only original still opens for editing)."""
+    import shutil
+    import tempfile
+    folder = os.path.join(GLib.get_user_cache_dir(), "aceoffice", "open")
+    os.makedirs(folder, exist_ok=True)
+    fd, copy = tempfile.mkstemp(suffix=os.path.splitext(path)[1], dir=folder)
+    os.close(fd)
+    shutil.copyfile(path, copy)
+    os.chmod(copy, 0o600)
+    return copy
+
+
+def slides_render(doc):
+    """Ubuntu's LibreOffice 26.2.6 paints every slide transparent through LibreOfficeKit
+    (issue #1); The Document Foundation's build (which the Flatpak ships) doesn't."""
+    w, h = doc.size_twips()
+    buf = doc.paint_part_tile(0, 32, 18, 0, 0, w, h) if w and h else b""
+    return any(bytes(buf)[3::4])
 
 # iWork files open through LibreOffice's importers but can't be written back.
 IMPORT_ONLY = {".pages": "Pages", ".numbers": "Numbers", ".key": "Keynote"}
@@ -81,6 +104,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         file_section.append("New from Template…", "app.new")
         file_section.append("New Document", "app.new-document")
         file_section.append("New Spreadsheet", "app.new-spreadsheet")
+        file_section.append("New Presentation", "app.new-presentation")
         file_section.append("Open…", "app.open")
         main_menu.append_section(None, file_section)
         file_section = Gio.Menu()
@@ -210,8 +234,17 @@ class DocumentWindow(Adw.ApplicationWindow):
 
         def work():
             try:
-                doc = office.load(path or template) if (path or template) else office.new(kind)
+                # A template is opened from a private copy: the installed one may be read-only
+                # (the Flatpak), and LibreOffice opens read-only files read-only.
+                source = path or (private_copy(template) if template else None)
+                doc = office.load(source) if source else office.new(kind)
                 doc.initialize_for_rendering(author=GLib.get_real_name() or GLib.get_user_name())
+                if doc.doc_type() == lok.DOCTYPE_PRESENTATION and not slides_render(doc):
+                    doc.destroy()
+                    raise lok.LOKError(
+                        "The LibreOffice AceOffice found can't draw slides (Ubuntu's own LibreOffice "
+                        "has this bug). The AceOffice Flatpak includes one that can; from a source "
+                        "checkout, run tools/dev-runtime.sh. See github.com/androbot9000/aceoffice/issues/1.")
                 GLib.idle_add(self._loaded, doc, path)
             except Exception as e:  # noqa: BLE001 - shown to the user
                 GLib.idle_add(self.show_error, f"Couldn't open {name}", str(e))
@@ -219,13 +252,6 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     def _loaded(self, doc, path):
         kind = KINDS.get(doc.doc_type(), "text")
-        if kind == "presentation" and not PRESENTATIONS_ENABLED:
-            doc.destroy()
-            self.show_error("Presentations aren't ready yet",
-                            "This early build of AceOffice edits documents and spreadsheets. "
-                            "Presentation support (PowerPoint and Keynote) is next. "
-                            "Follow github.com/androbot9000/aceoffice/issues/1.")
-            return False
         self.doc = doc
         self.kind = kind
         self.path = path
@@ -241,6 +267,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.view = DocView(doc)
         self.view.connect("state-changed", self._on_state_changed)
         self.view.connect("part-changed", lambda _v, n: self._select_part(n))
+        self.slides_nav = None
         self.view.connect("edited", lambda *_: self._set_modified(True))
         self.view.connect("zoom-changed", lambda _v, z: self.zoom_label.set_label(f"{round(z * 100)}%"))
         self.headers = None
@@ -250,7 +277,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         self._set_doc_actions(True)
         self.save_button.set_visible(True)
         self.format_button.set_visible(True)
-        self.document_button.set_visible(self.kind in ("text", "spreadsheet"))
+        self.document_button.set_visible(True)
         # The document's name moves to the left and the labelled tools take the middle.
         self.new_button.set_visible(False)
         self.open_button.set_visible(False)
@@ -262,6 +289,11 @@ class DocumentWindow(Adw.ApplicationWindow):
         self._update_title()
         if self.kind == "text":
             GLib.idle_add(self._initial_fit)
+        elif self.kind == "presentation":
+            self._add_slide_actions()
+            self.view.start_auto_fit()
+            self.slides_nav.rebuild()
+            self._update_slide_status()
         self.view.grab_focus()
         if self.imported_from:
             self.toasts.add_toast(Adw.Toast(title=f"Imported from {self.imported_from}. "
@@ -300,9 +332,12 @@ class DocumentWindow(Adw.ApplicationWindow):
             self.headers = SheetHeaders(self.view)
             content = self.headers.grid(self.scrolled)
         elif self.kind == "presentation":
+            self.view.center = True
+            self.slides_nav = SlideNavigator(self)
+            self.slides_nav.connect("slide-activated", lambda _n, i: self.select_slide(i, focus=False))
+            self.view.connect("tiles-invalidated", lambda _v, part: self.slides_nav.slide_changed(part))
             body = Gtk.Box()
-            body.append(self._build_slide_sidebar())
-            body.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+            body.append(self.slides_nav)
             body.append(self.scrolled)
             content = body
 
@@ -329,7 +364,7 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     def _tab_for(self, button):
         format_tab = {"text": "text", "spreadsheet": "cell"}.get(self.kind, "text")
-        doc_tab = {"text": "document", "spreadsheet": "sheet"}.get(self.kind, format_tab)
+        doc_tab = {"text": "document", "spreadsheet": "sheet", "presentation": "slide"}.get(self.kind, format_tab)
         return format_tab if button is self.format_button else doc_tab
 
     def _on_sidebar_toggle(self, button, clicked=False):
@@ -405,8 +440,8 @@ class DocumentWindow(Adw.ApplicationWindow):
                 fmt.toggle(label="%", tooltip="Percent", command=".uno:NumberFormatPercent"),
                 fmt.button(label="Σ", tooltip="Sum", command=".uno:AutoSum")))
         elif self.kind == "presentation":
-            add = self._button("list-add-symbolic", tooltip="New slide")
-            add.connect("clicked", lambda *_: self._add_slide())
+            add = self._button("list-add-symbolic", tooltip="New slide (Ctrl+Shift+N)")
+            add.connect("clicked", lambda *_: self.slide_command("new"))
             bar.append(add)
             bar.append(self._image_button())
 
@@ -541,12 +576,6 @@ class DocumentWindow(Adw.ApplicationWindow):
         self._refresh_parts()
         return row
 
-    def _build_slide_sidebar(self):
-        self.slides = Gtk.ListBox(css_classes=["navigation-sidebar"])
-        self.slides.connect("row-selected", self._on_slide_selected)
-        self._refresh_parts()
-        return Gtk.ScrolledWindow(child=self.slides, width_request=190, hscrollbar_policy=Gtk.PolicyType.NEVER)
-
     def _refresh_parts(self):
         count = self.doc.parts()
         current = self.doc.part()
@@ -561,17 +590,9 @@ class DocumentWindow(Adw.ApplicationWindow):
                 group = group or b
                 b.connect("toggled", lambda btn, n=i: btn.get_active() and not self._syncing and self._set_part(n))
                 self.tabs.append(b)
-        elif self.kind == "presentation":
-            self.slides.remove_all()
-            for i in range(count):
-                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6, margin_bottom=6)
-                box.append(Gtk.Label(label=str(i + 1), xalign=0, css_classes=["caption", "dim-label"]))
-                box.append(Gtk.Label(label=self.doc.part_name(i) or f"Slide {i + 1}", xalign=0,
-                                     ellipsize=Pango.EllipsizeMode.END))
-                self.slides.append(box)
-            row = self.slides.get_row_at_index(current)
-            if row:
-                self.slides.select_row(row)
+        elif self.kind == "presentation" and self.slides_nav:
+            self.slides_nav.rebuild()
+            self._update_slide_status()
         self._syncing = False
 
     def _set_part(self, n):
@@ -582,17 +603,78 @@ class DocumentWindow(Adw.ApplicationWindow):
         return False
 
     def _select_part(self, n):
+        if self.slides_nav:
+            # LibreOffice moved to another slide (Page Down, a new or deleted slide).
+            GLib.idle_add(lambda: self.doc and self.slides_nav and (self.slides_nav.rebuild(),
+                                                                   self._update_slide_status()) and False)
+            return
         GLib.idle_add(self._refresh_parts)
 
-    def _on_slide_selected(self, _list, row):
-        if row and not self._syncing:
-            self._set_part(row.get_index())
+    # --- slides -------------------------------------------------------------------
+
+    def select_slide(self, n, focus=True):
+        self._set_part(n)
+        self.slides_nav.select(n)
+        self._update_slide_status()
+        if focus:
             self.view.grab_focus()
 
-    def _add_slide(self):
-        self.doc.uno(".uno:InsertPage")
+    def _update_slide_status(self):
+        if self.kind == "presentation":
+            self.status_label.set_label(f"Slide {self.doc.part() + 1} of {self.doc.parts()}")
+
+    def _add_slide_actions(self):
+        for name, cb in [("slide-new", lambda: self.slide_command("new")),
+                         ("slide-duplicate", lambda: self.slide_command("duplicate")),
+                         ("slide-delete", lambda: self.slide_command("delete")),
+                         ("slide-up", lambda: self.slide_command("up")),
+                         ("slide-down", lambda: self.slide_command("down")),
+                         ("play", lambda: self.play()),
+                         ("play-beginning", lambda: self.play(0))]:
+            action = Gio.SimpleAction(name=name)
+            action.connect("activate", lambda _a, _p, cb=cb: cb())
+            self.add_action(action)
+        layout = Gio.SimpleAction(name="slide-layout", parameter_type=GLib.VariantType.new("i"))
+        layout.connect("activate", lambda _a, v: self.set_layout(v.get_int32()))
+        self.add_action(layout)
+        add = Gio.SimpleAction(name="slide-add", parameter_type=GLib.VariantType.new("i"))
+        add.connect("activate", lambda _a, v: self.slide_command("new", layout=v.get_int32()))
+        self.add_action(add)
+
+    def slide_command(self, name, layout=None):
+        """New, duplicate, delete or move the current slide (Keynote's Slide menu)."""
+        if name == "delete" and self.doc.parts() <= 1:
+            return
+        command = {"new": ".uno:InsertPage", "duplicate": ".uno:DuplicatePage", "delete": ".uno:DeletePage",
+                   "up": ".uno:MovePageUp", "down": ".uno:MovePageDown"}[name]
+        self.doc.uno(command)
+        # LibreOffice runs commands in turn but not at once: the layout goes on the new slide
+        # once it exists (and is current).
+        self._pending_layout = layout
         self._set_modified(True)
-        GLib.timeout_add(300, self._after_part_added)
+        GLib.timeout_add(150, self._after_slides_changed)
+
+    def set_layout(self, layout):
+        page = {"type": "unsigned short", "value": self.doc.part()}
+        self.doc.uno(".uno:AssignLayout", json.dumps({"WhatPage": page,
+                                                      "WhatLayout": {"type": "unsigned short", "value": layout}}))
+        self._set_modified(True)
+
+    def _after_slides_changed(self):
+        if not self.doc:
+            return False
+        layout, self._pending_layout = getattr(self, "_pending_layout", None), None
+        if layout is not None:
+            self.set_layout(layout)
+        self.view.invalidate_all(keep_showing=False)
+        self.view.queue_resize()
+        self._refresh_parts()
+        return False
+
+    def play(self, start=None):
+        """Show the slides full screen, from start (default: the current slide)."""
+        if self.kind == "presentation":
+            Presenter(self, self.doc.part() if start is None else start)
 
     def _add_sheet(self):
         n = self.doc.parts()
@@ -601,6 +683,8 @@ class DocumentWindow(Adw.ApplicationWindow):
         GLib.timeout_add(300, self._after_part_added)
 
     def _after_part_added(self):
+        if not self.doc:
+            return False
         self._refresh_parts()
         self._set_part(self.doc.parts() - 1 if self.kind == "spreadsheet" else self.doc.part())
         self._refresh_parts()
@@ -641,7 +725,9 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.fmt.on_state(command, value)
 
     def _zoom(self, factor):
-        if self.view:
+        if self.view and factor is None and self.kind == "presentation":
+            self.view.start_auto_fit()              # "Actual size" for slides is: fit the window
+        elif self.view:
             self.view.set_zoom(1.0 if factor is None else self.view.zoom * factor)
 
     # --- title / state ------------------------------------------------------------

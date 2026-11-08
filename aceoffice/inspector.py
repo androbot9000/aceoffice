@@ -249,6 +249,7 @@ class Inspector(Gtk.Box):
             self._add("sheet", "Sheet", self._sheet_page())
         else:
             self._add("text", "Text", self._text_page())
+            self._add("slide", "Slide", self._slide_page())
             self.page_setup = None
         self.comments = Comments(win)
         self._add("comments", "Comments", self.comments)
@@ -276,6 +277,33 @@ class Inspector(Gtk.Box):
     def refresh(self):
         self._on_tab()
 
+    def _slide_page(self):
+        """Layout and slide commands for the current slide, as in Keynote's Slide Layout tab."""
+        from .window import LAYOUTS
+        layout = _section("Layout")
+        grid = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, max_children_per_line=2,
+                           min_children_per_line=2, homogeneous=True, column_spacing=6, row_spacing=6)
+        for label, number in LAYOUTS:
+            b = Gtk.Button(label=label, css_classes=["ace-layout-button"], action_name="win.slide-layout",
+                           action_target=GLib.Variant.new_int32(number))
+            grid.append(b)
+        layout.append(grid)
+        slide = _section("Slide")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        for label, action in [("New Slide", "win.slide-new"), ("Duplicate Slide", "win.slide-duplicate"),
+                              ("Delete Slide", "win.slide-delete")]:
+            box.append(Gtk.Button(label=label, action_name=action))
+        moves = Gtk.Box(spacing=6, homogeneous=True)
+        moves.append(Gtk.Button(label="Move Up", action_name="win.slide-up"))
+        moves.append(Gtk.Button(label="Move Down", action_name="win.slide-down"))
+        box.append(moves)
+        slide.append(box)
+        show = _section("Slideshow")
+        show.append(Gtk.Button(label="Play from This Slide", action_name="win.play",
+                               css_classes=["suggested-action"]))
+        show.append(Gtk.Button(label="Play from the Beginning", action_name="win.play-beginning"))
+        return self._wrap(layout, slide, show)
+
     def _text_page(self):
         fmt = self.fmt
         style = _section("Paragraph Style")
@@ -299,11 +327,12 @@ class Inspector(Gtk.Box):
         para.append(_row("Indent", fmt.group(
             fmt.button("format-indent-less-symbolic", tooltip="Decrease indent", command=".uno:DecrementIndent"),
             fmt.button("format-indent-more-symbolic", tooltip="Increase indent", command=".uno:IncrementIndent"))))
-        if self.win.kind == "text":
+        if self.win.kind in ("text", "presentation"):
             para.append(_row("Lists", fmt.group(
                 fmt.toggle("view-list-bullet-symbolic", tooltip="Bulleted list", command=".uno:DefaultBullet"),
                 fmt.toggle("view-list-ordered-symbolic", tooltip="Numbered list", command=".uno:DefaultNumbering"))))
-        return self._wrap(style, font, para)
+        # Paragraph styles are Writer's; slides take their look from the theme instead.
+        return self._wrap(style, font, para) if self.win.kind == "text" else self._wrap(font, para)
 
     def _cell_page(self):
         fmt = self.fmt

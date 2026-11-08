@@ -49,6 +49,8 @@ class DocView(Gtk.Widget):
         "context-menu": (GObject.SignalFlags.RUN_FIRST, None, (float, float)),
         "search-not-found": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "comment": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        # LibreOffice redrew part of a sheet or slide (-1: the current one); slide thumbnails follow.
+        "tiles-invalidated": (GObject.SignalFlags.RUN_FIRST, None, (int,)),
         # Visible area, zoom or row/column sizes changed: spreadsheet headers redraw.
         "geometry-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
@@ -71,6 +73,11 @@ class DocView(Gtk.Widget):
         self._graphic = None
         self._buttons = 0
         self._hadj = self._vadj = None
+        # Slides sit in the middle of the window, with a shadow, as in Keynote.
+        self.center = False
+        # Keep the page fitted to the window as it resizes, until the user zooms.
+        self.auto_fit = False
+        self._fitted_to = None
 
         self.set_focusable(True)
         self.set_overflow(Gtk.Overflow.HIDDEN)
@@ -123,8 +130,11 @@ class DocView(Gtk.Widget):
     def _offset_x(self):
         return max(0, (self.get_width() - self._doc_px()[0]) // 2)
 
+    def _offset_y(self):
+        return max(0, (self.get_height() - self._doc_px()[1]) // 2) if self.center else 0
+
     def to_twips(self, x, y):
-        return int((x - self._offset_x()) / self.ppt), int(y / self.ppt)
+        return int((x - self._offset_x()) / self.ppt), int((y - self._offset_y()) / self.ppt)
 
     def _visible(self):
         """Visible area in widget pixels: (x, y, w, h)."""
@@ -142,6 +152,8 @@ class DocView(Gtk.Widget):
             adj.connect("notify::page-size", self._on_scrolled)
 
     def _on_scrolled(self, *_):
+        if self.doc.closed:
+            return
         x, y, w, h = self._visible()
         ox = self._offset_x()
         self.doc.set_visible_area(*self.visible_twips())
@@ -150,7 +162,7 @@ class DocView(Gtk.Widget):
 
     def visible_twips(self):
         x, y, w, h = self._visible()
-        return (int(max(0, x - self._offset_x()) / self.ppt), int(y / self.ppt),
+        return (int(max(0, x - self._offset_x()) / self.ppt), int(max(0, y - self._offset_y()) / self.ppt),
                 int(w / self.ppt), int(h / self.ppt))
 
     @property
@@ -158,17 +170,26 @@ class DocView(Gtk.Widget):
         return self._cell_cursor
 
     def do_measure(self, orientation, for_size):
+        if self.doc.closed:
+            return 0, 0, -1, -1
         w, h = self._doc_px()
         size = w if orientation == Gtk.Orientation.HORIZONTAL else h
         return size, size, -1, -1
 
     def do_size_allocate(self, width, height, baseline):
         self._on_scrolled()
+        if self.auto_fit and self._hadj:
+            area = (int(self._hadj.get_page_size()), int(self._vadj.get_page_size()))
+            if area != self._fitted_to and all(area):
+                self._fitted_to = area
+                GLib.idle_add(lambda: self.auto_fit and self.fit_page(*area, auto=True) and False)
 
     # --- zoom -----------------------------------------------------------------
 
-    def set_zoom(self, zoom):
-        zoom = min(4.0, max(0.25, round(zoom, 2)))
+    def set_zoom(self, zoom, auto=False):
+        if not auto:
+            self.auto_fit = False
+        zoom = min(4.0, max(0.1, round(zoom, 2)))
         if zoom == self.zoom:
             return
         frac = None
@@ -187,6 +208,18 @@ class DocView(Gtk.Widget):
         tw = self._tile_twips()
         self.doc.set_client_zoom(TILE, tw)
 
+    def fit_page(self, available_w, available_h, margin=56, auto=False):
+        """Zoom so the whole page (a slide) fits in the given area."""
+        w, h = self.doc.size_twips()
+        if w and h and available_w > margin and available_h > margin:
+            self.set_zoom(min((available_w - margin) / (w / TWIPS_PER_PX),
+                              (available_h - margin) / (h / TWIPS_PER_PX)), auto=auto)
+
+    def start_auto_fit(self):
+        self.auto_fit = True
+        self._fitted_to = None
+        self.queue_allocate()
+
     def fit_width(self, available_px):
         w, _ = self.doc.size_twips()
         if w:
@@ -202,6 +235,7 @@ class DocView(Gtk.Widget):
     def _visible_tiles(self):
         vx, vy, vw, vh = self._visible()
         ox = self._offset_x()
+        vy -= self._offset_y()
         tw = self._tile_twips()
         step = tw * self.ppt
         doc_w, doc_h = self._doc_px()
@@ -214,24 +248,34 @@ class DocView(Gtk.Widget):
                 yield tx, ty
 
     def do_snapshot(self, snapshot):
-        ox = self._offset_x()
+        if self.doc.closed:
+            return
+        ox, oy = self._offset_x(), self._offset_y()
         step = self._tile_twips() * self.ppt
         self.frames += 1
         missing = stale = False
+        if self.center:
+            w, h = self._doc_px()
+            page = Gsk.RoundedRect()
+            page.init_from_rect(Graphene.Rect().init(ox, oy, w, h), 0)
+            snapshot.append_outset_shadow(page, _SHADOW, 0, 3, 0, 14)
+            snapshot.push_clip(Graphene.Rect().init(ox, oy, w, h))
         for key in self._visible_tiles():
             tex = self._tiles.get(key)
-            rect = Graphene.Rect().init(ox + key[0] * step, key[1] * step, step, step)
+            rect = Graphene.Rect().init(ox + key[0] * step, oy + key[1] * step, step, step)
             if tex:
                 snapshot.append_texture(tex, rect)
                 stale = stale or key in self._stale
             else:
                 missing = True
                 snapshot.append_color(_WHITE, rect)
+        if self.center:
+            snapshot.pop()
         if missing:
             self.placeholder_frames += 1
         if missing or stale:
             self._schedule_render()
-        self._snapshot_overlays(snapshot, ox)
+        self._snapshot_overlays(snapshot, ox, oy)
 
     def _schedule_render(self):
         # HIGH_IDLE runs before GTK's layout and paint (HIGH_IDLE + 10/20), so fresh
@@ -241,6 +285,8 @@ class DocView(Gtk.Widget):
 
     def _render_pending(self):
         self._render_source = 0
+        if self.doc.closed:
+            return False
         scale = self._scale()
         tw = self._tile_twips()
         px = math.ceil(TILE * scale)
@@ -258,19 +304,20 @@ class DocView(Gtk.Widget):
             self.queue_draw()
         return False
 
-    def _px_rect(self, r, ox):
+    def _px_rect(self, r, ox, oy=0):
         x, y, w, h = r
-        return Graphene.Rect().init(ox + x * self.ppt, y * self.ppt, max(w * self.ppt, 1), max(h * self.ppt, 1))
+        return Graphene.Rect().init(ox + x * self.ppt, oy + y * self.ppt, max(w * self.ppt, 1),
+                                    max(h * self.ppt, 1))
 
-    def _snapshot_overlays(self, snapshot, ox):
+    def _snapshot_overlays(self, snapshot, ox, oy=0):
         accent = _accent()
         sel = accent.copy()
         sel.alpha = 0.28
         for r in self._selection:
-            snapshot.append_color(sel, self._px_rect(r, ox))
+            snapshot.append_color(sel, self._px_rect(r, ox, oy))
         for r in (self._cell_cursor, self._graphic):
             if r:
-                rr = self._px_rect(r, ox)
+                rr = self._px_rect(r, ox, oy)
                 width = [2.0] * 4
                 outline = Gsk.RoundedRect()
                 outline.init_from_rect(rr, 0)
@@ -279,7 +326,7 @@ class DocView(Gtk.Widget):
                 and not self._selection):
             x, y, w, h = self._cursor
             snapshot.append_color(_BLACK,
-                                  Graphene.Rect().init(ox + x * self.ppt, y * self.ppt,
+                                  Graphene.Rect().init(ox + x * self.ppt, oy + y * self.ppt,
                                                        max(1.5, w * self.ppt), h * self.ppt))
 
     def invalidate_all(self, keep_showing=True):
@@ -304,10 +351,16 @@ class DocView(Gtk.Widget):
     # --- LibreOffice callbacks -------------------------------------------------
 
     def _on_lok(self, kind, payload):
+        if self.doc.closed:
+            return False             # the last messages of a document that has since closed
         if kind == lok.CALLBACK_INVALIDATE_TILES:
             # "x, y, w, h, part, mode" or "EMPTY, part, mode"; ignore other sheets/slides.
             fields = [f.strip() for f in payload.split(",")]
             part_field = fields[1] if fields[0] == "EMPTY" else (fields[4] if len(fields) > 4 else None)
+            try:
+                self.emit("tiles-invalidated", int(part_field) if part_field not in (None, "-1") else self.doc.part())
+            except ValueError:
+                pass
             if part_field not in (None, "-1") and part_field.lstrip("-").isdigit() \
                     and int(part_field) != self.doc.part():
                 return False
@@ -379,7 +432,7 @@ class DocView(Gtk.Widget):
         if not r or not self._vadj:
             return
         vx, vy, vw, vh = self._visible()
-        top, bottom = r[1] * self.ppt, (r[1] + r[3]) * self.ppt
+        top, bottom = self._offset_y() + r[1] * self.ppt, self._offset_y() + (r[1] + r[3]) * self.ppt
         if top < vy:
             self._vadj.set_value(top - 24)
         elif bottom > vy + vh:
@@ -548,6 +601,7 @@ def _rgba(spec):
 
 
 _WHITE = _rgba("white")
+_SHADOW = _rgba("rgba(0,0,0,0.22)")
 _BLACK = _rgba("black")
 
 

@@ -13,7 +13,7 @@ import ctypes
 import json
 import os
 import threading
-from ctypes import (CFUNCTYPE, POINTER, Structure, c_bool, c_char_p, c_int,
+from ctypes import (CFUNCTYPE, POINTER, Structure, c_bool, c_char_p, c_double, c_int,
                     c_long, c_size_t, c_ubyte, c_uint, c_ulonglong, c_void_p)
 
 # --- enums (LibreOfficeKitEnums.h) -----------------------------------------
@@ -124,6 +124,28 @@ _DocumentClass._fields_ = [
     ("renderFont", CFUNCTYPE(c_void_p, _D, c_char_p, c_char_p, POINTER(c_int), POINTER(c_int))),
     ("getPartHash", CFUNCTYPE(c_void_p, _D, c_int)),
     ("paintPartTile", CFUNCTYPE(None, _D, POINTER(c_ubyte), c_int, c_int, c_int, c_int, c_int, c_int, c_int, c_int)),
+    # Members AceOffice doesn't call are typed as plain pointers; they only hold places.
+    ("getViewIds", c_void_p), ("setOutlineState", c_void_p), ("paintWindow", c_void_p),
+    ("postWindow", c_void_p), ("postWindowKeyEvent", c_void_p), ("postWindowMouseEvent", c_void_p),
+    ("setViewLanguage", c_void_p), ("postWindowExtTextInputEvent", c_void_p), ("getPartInfo", c_void_p),
+    ("paintWindowDPI", c_void_p), ("insertCertificate", c_void_p), ("addCertificate", c_void_p),
+    ("getSignatureState", c_void_p), ("renderShapeSelection", c_void_p), ("postWindowGestureEvent", c_void_p),
+    ("createViewWithOptions", c_void_p), ("selectPart", c_void_p), ("moveSelectedParts", c_void_p),
+    ("resizeWindow", c_void_p), ("getClipboard", c_void_p), ("setClipboard", c_void_p),
+    ("getSelectionType", c_void_p), ("removeTextContext", c_void_p), ("sendDialogEvent", c_void_p),
+    ("renderFontOrientation", c_void_p), ("paintWindowForView", c_void_p), ("completeFunction", c_void_p),
+    ("setWindowTextSelection", c_void_p), ("sendFormFieldEvent", c_void_p), ("setBlockedCommandList", c_void_p),
+    ("renderSearchResult", c_void_p), ("sendContentControlEvent", c_void_p),
+    ("getSelectionTypeAndText", c_void_p), ("getDataArea", c_void_p), ("getEditMode", c_void_p),
+    ("setViewTimezone", c_void_p), ("setAccessibilityState", c_void_p), ("getA11yFocusedParagraph", c_void_p),
+    ("getA11yCaretPosition", c_void_p), ("setViewReadOnly", c_void_p), ("setAllowChangeComments", c_void_p),
+    # LibreOffice 24.8+: the slideshow renderer (draws slides as a show does: no empty placeholders).
+    ("getPresentationInfo", CFUNCTYPE(c_void_p, _D)),
+    ("createSlideRenderer", CFUNCTYPE(c_bool, _D, c_char_p, c_int, POINTER(c_uint), POINTER(c_uint),
+                                      c_bool, c_bool)),
+    ("postSlideshowCleanup", CFUNCTYPE(None, _D)),
+    ("renderNextSlideLayer", CFUNCTYPE(c_bool, _D, POINTER(c_ubyte), POINTER(c_bool), POINTER(c_double),
+                                       POINTER(c_void_p))),
 ]
 
 _libc = ctypes.CDLL(None)
@@ -164,6 +186,12 @@ def find_install():
 
 class LOKError(RuntimeError):
     pass
+
+
+# Every document loads with these. LibreOffice 26.2.7 turns Basic off for LibreOfficeKit
+# unless asked; AceOffice's own page-setup macros need it. Security level 3 ("very high")
+# still refuses macros inside the documents themselves (none are in trusted locations).
+LOAD_OPTIONS = b"Language=en-US,EnableMacrosExecution=true,MacroSecurityLevel=3"
 
 
 def uno_args(**kwargs):
@@ -224,6 +252,24 @@ def install_macros(profile):
             f.write(text.replace("</library:libraries>", entry + "</library:libraries>"))
 
 
+def allow_basic(profile):
+    """Undo the 'macros disabled' switch a load without EnableMacrosExecution writes into
+    the profile (LibreOffice 26.2.7 and later); it would block AceOffice's own macros too."""
+    import re
+    path = os.path.join(profile, "user", "registrymodifications.xcu")
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return
+    cleaned = re.sub(r'<item oor:path="/org.openoffice.Office.Common/Security/Scripting">'
+                     r'<prop oor:name="DisableMacrosExecution"[^>]*><value>true</value></prop></item>\n?',
+                     "", text)
+    if cleaned != text:
+        with open(path, "w") as f:
+            f.write(cleaned)
+
+
 def _point_liblangtag_at_runtime(install):
     """An unpacked runtime (tools/dev-runtime.sh) keeps liblangtag's data under its
     own usr/share, but the library only looks in /usr/share unless told otherwise."""
@@ -275,6 +321,7 @@ class Office:
                                "aceoffice", "lo-profile")
         os.makedirs(profile, exist_ok=True)
         install_macros(profile)
+        allow_basic(profile)
         self._p = hook(install.encode(), ("file://" + profile).encode())
         if not self._p:
             raise LOKError(f"LibreOfficeKit failed to start from {install}")
@@ -294,7 +341,8 @@ class Office:
 
     def load(self, path):
         url = "file://" + os.path.abspath(path)
-        d = self._c.documentLoadWithOptions(self._p, url.encode(), b"Language=en-US")
+        with _VIEW_LOCK:
+            d = self._c.documentLoadWithOptions(self._p, url.encode(), LOAD_OPTIONS)
         if not d:
             raise LOKError(self.error() or f"Could not open {path}")
         return Document(d, path)
@@ -302,8 +350,8 @@ class Office:
     def new(self, kind):
         """Create a blank document. kind is 'text', 'spreadsheet' or 'presentation'."""
         factory = {"text": "swriter", "spreadsheet": "scalc", "presentation": "simpress"}[kind]
-        d = self._c.documentLoadWithOptions(self._p, f"private:factory/{factory}".encode(),
-                                            b"Language=en-US")
+        with _VIEW_LOCK:
+            d = self._c.documentLoadWithOptions(self._p, f"private:factory/{factory}".encode(), LOAD_OPTIONS)
         if not d:
             raise LOKError(self.error() or f"Could not create a {kind} document")
         return Document(d, None)
@@ -330,6 +378,15 @@ class Document:
             sink(kind, text)
         self._cb = LibreOfficeKitCallback(tramp)   # keep the ctypes callback alive
         self._c.registerCallback(self._d, self._cb, None)
+        self._view = self._c.getView(self._d)
+
+    @property
+    def closed(self):
+        return not self._d
+
+    def _activate(self):
+        if self._d:
+            self._c.setView(self._d, self._view)
 
     # lifecycle / info
     def initialize_for_rendering(self, author=None):
@@ -379,9 +436,10 @@ class Document:
         self.path = path
 
     def destroy(self):
-        if self._d:
-            self._c.destroy(self._d)
-            self._d = None
+        with _VIEW_LOCK:
+            if self._d:
+                self._c.destroy(self._d)
+                self._d = None
 
     # rendering
     def paint_tile(self, px_w, px_h, tw_x, tw_y, tw_w, tw_h):
@@ -389,6 +447,51 @@ class Document:
         buf = (c_ubyte * (px_w * px_h * 4))()
         self._c.paintTile(self._d, buf, px_w, px_h, tw_x, tw_y, tw_w, tw_h)
         return buf
+
+    def paint_part_tile(self, part, px_w, px_h, tw_x, tw_y, tw_w, tw_h):
+        """paint_tile for a given part (slide or sheet) without switching the view to it."""
+        buf = (c_ubyte * (px_w * px_h * 4))()
+        self._c.paintPartTile(self._d, buf, part, 0, px_w, px_h, tw_x, tw_y, tw_w, tw_h)
+        return buf
+
+    def _has(self, member):
+        """Whether this LibreOffice's vtable reaches member (older versions are shorter)."""
+        field = getattr(_DocumentClass, member)
+        return field.offset + field.size <= self._c.nSize
+
+    def presentation_info(self):
+        """Slides as a show plays them (hidden slides left out): [{'hash', 'index', ...}]."""
+        if not self._has("getPresentationInfo"):
+            return None
+        try:
+            return json.loads(_take_string(self._c.getPresentationInfo(self._d)) or "")
+        except ValueError:
+            return None
+
+    def render_slide(self, slide_hash, index, width, height):
+        """Render a slide as a slideshow shows it. Returns (width, height, [layer buffers]),
+        bottom layer first, each BGRA premultiplied; None if this LibreOffice can't."""
+        if not self._has("renderNextSlideLayer"):
+            return None
+        w, h = c_uint(width), c_uint(height)
+        if not self._c.createSlideRenderer(self._d, str(slide_hash).encode(), index, ctypes.byref(w),
+                                           ctypes.byref(h), True, True):
+            return None
+        layers = []
+        try:
+            for _ in range(256):
+                buf = (c_ubyte * (w.value * h.value * 4))()
+                is_bitmap, scale, meta = c_bool(), c_double(), c_void_p()
+                done = self._c.renderNextSlideLayer(self._d, buf, ctypes.byref(is_bitmap), ctypes.byref(scale),
+                                                    ctypes.byref(meta))
+                _take_string(meta.value)             # describes the layer (for animations); not used
+                if done:
+                    break
+                if is_bitmap.value:
+                    layers.append(buf)
+        finally:
+            self._c.postSlideshowCleanup(self._d)
+        return w.value, h.value, layers
 
     def set_client_zoom(self, tile_px, tile_twips):
         self._c.setClientZoom(self._d, tile_px, tile_px, tile_twips, tile_twips)
@@ -429,3 +532,27 @@ class Document:
 
     def command_values(self, command):
         return _take_string(self._c.getCommandValues(self._d, command.encode()))
+
+
+# With several documents open, LibreOffice works on whichever view is current, and closing
+# a document (a thumbnail, say) can leave none current: Impress then reports a size of 0.
+# So every call first makes its own document's view current (cheap when it already is),
+# under one lock so the thumbnail thread can't switch views in between.
+_VIEW_LOCK = threading.RLock()
+
+
+def _in_own_view(method):
+    def call(self, *args, **kwargs):
+        with _VIEW_LOCK:
+            if not self._d:
+                # LibreOffice would crash on a closed document; a late idle callback gets this instead.
+                raise LOKError(f"{method.__name__}: the document is closed")
+            self._activate()
+            return method(self, *args, **kwargs)
+    call.__name__, call.__doc__ = method.__name__, method.__doc__
+    return call
+
+
+for _name, _method in list(vars(Document).items()):
+    if callable(_method) and not _name.startswith("_") and _name not in ("register_callback", "destroy"):
+        setattr(Document, _name, _in_own_view(_method))

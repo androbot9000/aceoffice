@@ -8,8 +8,11 @@ cd "$(dirname "$0")/.."
 OUT="$(realpath -m "${1:-$(mktemp -d)}")"
 mkdir -p "$OUT"
 
+OFFICIAL="${XDG_DATA_HOME:-$HOME/.local/share}/aceoffice/runtime-official/program"
 RT="${XDG_DATA_HOME:-$HOME/.local/share}/aceoffice/runtime"
-if [ -z "${ACEOFFICE_LO_PATH:-}" ] && [ ! -e /usr/lib/libreoffice/program/libmergedlo.so ]; then
+if [ -z "${ACEOFFICE_LO_PATH:-}" ] && [ -d "$OFFICIAL" ]; then
+    export ACEOFFICE_LO_PATH="$OFFICIAL"
+elif [ -z "${ACEOFFICE_LO_PATH:-}" ] && [ ! -e /usr/lib/libreoffice/program/libmergedlo.so ]; then
     export ACEOFFICE_LO_PATH="$RT/usr/lib/libreoffice/program"
     export LD_LIBRARY_PATH="$ACEOFFICE_LO_PATH:$RT/usr/lib/x86_64-linux-gnu"
 fi

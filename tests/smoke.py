@@ -302,6 +302,71 @@ def step_sheet3():
     first = created[0]
     first.modified = False
     first.close()
+    from aceoffice.manager import template_path
+    app.new_from_template(template_path("slate.fodp"), "Slate", "presentation")
+    wait(lambda: editor_win().doc is not None and editor_win().kind == "presentation", step_slides)
+
+
+def step_slides():
+    """A presentation from the Slate template: navigator, editing, slide commands, Play, save."""
+    win = editor_win()
+    nav = win.slides_nav
+    loop_until(lambda: nav.rendered() == 2, 10000)
+    check(f"slide navigator shows both slides with thumbnails ({nav.rendered()} of {win.doc.parts()})",
+          win.doc.parts() == 2 and nav.rendered() == 2)
+    loop_until(lambda: False, 800)
+    w, h = win.view._doc_px()
+    check(f"the slide fits the window ({w}x{h} in {win.scrolled.get_width()}x{win.scrolled.get_height()})",
+          0 < w <= win.scrolled.get_width() and 0 < h <= win.scrolled.get_height())
+    check(f"status bar shows the slide ({win.status_label.get_label()!r})",
+          win.status_label.get_label() == "Slide 1 of 2")
+    # Tab selects the first object (the title), Enter edits its text.
+    v = win.view
+    v.grab_focus()
+    # LibreOffice handles keys and commands asynchronously; give each a moment.
+    for step in (lambda: v.press_key(0, 1282), lambda: v.press_key(13, 1280),
+                 lambda: win.doc.uno(".uno:SelectAll"), lambda: v.type_text("Leaving iCloud behind"),
+                 lambda: v.press_key(0, 1281), lambda: v.press_key(0, 1281)):     # Tab, Enter, …, Escape
+        step()
+        loop_until(lambda: False, 250)
+    win.lookup_action("slide-add").activate(GLib.Variant.new_int32(1))
+    loop_until(lambda: win.doc.parts() == 3 and len(nav.pictures) == 3, 5000)
+    check(f"Add Slide adds a slide after the current one ({win.doc.parts()} slides, on {win.doc.part() + 1})",
+          win.doc.parts() == 3 and win.doc.part() == 1)
+    win.activate_action("win.slide-duplicate")
+    loop_until(lambda: len(nav.pictures) == 4, 5000)
+    win.activate_action("win.slide-delete")
+    loop_until(lambda: len(nav.pictures) == 3, 5000)
+    check(f"duplicate and delete ({win.doc.parts()} slides, navigator {len(nav.pictures)})",
+          win.doc.parts() == 3 and len(nav.pictures) == 3)
+    win.select_slide(0)
+    loop_until(lambda: False, 1200)
+    shot(win, "7-presentation")
+    win.show_inspector("slide")
+    loop_until(lambda: False, 600)
+    shot(win, "7b-presentation-slide-tab")
+    win.play(0)
+    show = next((w for w in Gtk.Window.list_toplevels() if w.__class__.__name__ == "Presenter"), None)
+    loop_until(lambda: show is not None and show.pictures[show._front].get_paintable() is not None, 5000)
+    check("Play opens the slideshow on the first slide",
+          show is not None and show.index == 0 and show.pictures[show._front].get_paintable() is not None)
+    loop_until(lambda: False, 800)
+    if show:
+        shot(show, "7c-play")
+        show.go(1)
+        loop_until(lambda: False, 600)
+        check("and moves to the next slide", show.index == 1)
+        show.finish()
+    path = os.path.join(DOCS, "Pitch.pptx")
+    win._write(path)
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        slides = [n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")]
+        first = z.read("ppt/slides/slide1.xml").decode("utf-8", "replace")
+    check(f"saved pptx with 3 slides ({len(slides)})", len(slides) == 3)
+    check("with the new title", "Leaving iCloud behind" in first)
+    win.modified = False
+    win.close()
     app.open_path(os.path.join(DOCS, "Notes.docx"))
     wait(lambda: editor_win().doc is not None and editor_win().path
          and editor_win().path.endswith("Notes.docx"), step_reopen)
@@ -334,10 +399,10 @@ def step_recents():
             out.append(child.get_child())
             child = child.get_next_sibling()
         return out
-    loop_until(lambda: len(cards()) >= 2 and all(c.picture.get_visible() for c in cards()), 20000)
+    loop_until(lambda: len(cards()) >= 3 and all(c.picture.get_visible() for c in cards()), 20000)
     names = sorted(c.title for c in cards())
     check(f"recent files listed with thumbnails ({names})", "Notes.docx" in names and "Budget.xlsx" in names
-          and all(c.picture.get_visible() for c in cards()))
+          and "Pitch.pptx" in names and all(c.picture.get_visible() for c in cards()))
     loop_until(lambda: False, 400)
     shot(win, "6-start-recents")
     finish()

@@ -3,7 +3,7 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 """The labelled toolbar in the title bar (Insert, Table, Chart, Text, Shape, Image,
-Comment), in the style of Pages and Numbers.
+Comment; for slides, Add Slide and Play first), in the style of Pages, Numbers and Keynote.
 
 Every command here works without a LibreOffice dialog: LibreOfficeKit can't show
 LibreOffice's own dialogs, so anything that needs input (a link, a comment, a table
@@ -84,8 +84,27 @@ class Tools:
         self.win.insert_action_group("tool", self.group)
         box = Gtk.Box(spacing=2, css_classes=["ace-tools"])
 
+        if kind == "presentation":
+            # Keynote's toolbar starts with Add Slide and Play.
+            from .window import LAYOUTS
+            slides = Gio.Menu()
+            layouts = Gio.Menu()
+            for label, number in LAYOUTS:
+                layouts.append(label, f"win.slide-add({number})")
+            slides.append_section(None, layouts)
+            other = Gio.Menu()
+            other.append("Duplicate This Slide", "win.slide-duplicate")
+            slides.append_section(None, other)
+            box.append(self._track(tool_button("ace-slide-add-symbolic", "Add Slide", "Add a slide (Ctrl+Shift+N)",
+                                               menu=slides)))
+            play = tool_button("ace-play-symbolic", "Play", "Play the slideshow from this slide (Ctrl+Alt+P)")
+            play.set_action_name("win.play")
+            box.append(self._track(play))
+            box.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL, margin_start=6, margin_end=6,
+                                     margin_top=6, margin_bottom=6, css_classes=["spacer"]))
+
         box.append(self._track(tool_button("ace-insert-symbolic", "Insert", menu=self._insert_menu())))
-        if kind == "text":
+        if kind in ("text", "presentation"):
             box.append(self._track(tool_button("ace-table-symbolic", "Table", "Insert a table",
                                                popover=self._table_picker())))
         elif kind == "spreadsheet":
@@ -146,6 +165,17 @@ class Tools:
             self._action("page-number", lambda: self.run(".uno:InsertPageNumberField"))
             self._action("date", lambda: self.run(".uno:InsertDateField"))
             self._action("footnote", lambda: self.run(".uno:InsertFootnote"))
+            menu.append_section(None, fields)
+        elif kind == "presentation":
+            slide = Gio.Menu()
+            slide.append("New Slide", "win.slide-new")
+            slide.append("Duplicate Slide", "win.slide-duplicate")
+            menu.append_section(None, slide)
+            fields = Gio.Menu()
+            fields.append("Slide Number", "tool.slide-number")
+            fields.append("Date", "tool.date")
+            self._action("slide-number", lambda: self.run(".uno:InsertPageField"))
+            self._action("date", lambda: self.run(".uno:InsertDateFieldFix"))
             menu.append_section(None, fields)
         else:
             cells = Gio.Menu()

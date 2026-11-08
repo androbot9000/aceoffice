@@ -2,7 +2,7 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
-"""Write AceOffice's starter templates (aceoffice/templates/*.fodt, *.fods).
+"""Write AceOffice's starter templates (aceoffice/templates/*.fodt, *.fods, *.fodp).
 
 Flat OpenDocument files, so they're plain text in git. Run this after editing:
     tools/make-templates.py
@@ -337,8 +337,146 @@ def spreadsheets():
     sheet_doc("invoice", 4, rows, col_widths=["2.8in", "1in", "1.3in", "1.4in"], title="Invoice")
 
 
+# --- presentations --------------------------------------------------------------
+
+PNS = NS + (' xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"'
+            ' xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0"'
+            ' xmlns:xlink="http://www.w3.org/1999/xlink"')
+
+SLIDE_W, SLIDE_H = 28.0, 15.75            # cm: 16:9, LibreOffice's default
+TITLE_SLIDE = {"title": (1.6, 4.6, 24.8, 3.6), "subtitle": (1.6, 8.5, 24.8, 2.2)}
+CONTENT_SLIDE = {"title": (1.6, 0.9, 24.8, 2.4), "outline": (1.6, 3.7, 24.8, 10.6)}
+
+
+def _box(x, y, w, h):
+    return f'svg:x="{x}cm" svg:y="{y}cm" svg:width="{w}cm" svg:height="{h}cm"'
+
+
+def _bullets(color, name="ace-bullets"):
+    levels = "".join(
+        f'<text:list-level-style-bullet text:level="{n}" text:bullet-char="{"•" if n % 2 else "–"}">'
+        f'<style:list-level-properties text:space-before="{(n - 1) * 1.2}cm" text:min-label-width="0.9cm"/>'
+        f'<style:text-properties fo:font-family="Noto Sans" fo:color="{color}" fo:font-size="130%"/>'
+        '</text:list-level-style-bullet>' for n in range(1, 10))
+    return f'<text:list-style style:name="{name}">{levels}</text:list-style>'
+
+
+def slides_doc(name, bg, title_color, body_color, accent, gradient=None):
+    if gradient:
+        fill = f'draw:fill="gradient" draw:fill-gradient-name="ace-gradient"'
+        grad = (f'<draw:gradient draw:name="ace-gradient" draw:style="linear" draw:start-color="{gradient[0]}" '
+                f'draw:end-color="{gradient[1]}" draw:start-intensity="100%" draw:end-intensity="100%" '
+                'draw:angle="300deg" draw:border="0%"/>')
+    else:
+        fill = f'draw:fill="solid" draw:fill-color="{bg}"'
+        grad = ""
+    text = 'style:font-name="Noto Sans" fo:language="en" fo:country="US"'
+    outline = "".join(
+        f'<style:style style:name="Default-outline{n}" style:family="presentation" '
+        f'style:parent-style-name="Default-outline{n - 1}"><style:text-properties fo:font-size="{max(18, 26 - 3 * (n - 1))}pt"/>'
+        '</style:style>' for n in range(2, 10))
+    styles = (
+        grad +
+        '<style:default-style style:family="graphic"><style:graphic-properties draw:stroke="none" '
+        'draw:fill="none"/><style:paragraph-properties style:writing-mode="lr-tb"/>'
+        f'<style:text-properties {text} fo:color="{body_color}"/></style:default-style>'
+        f'<style:style style:name="standard" style:family="graphic"><style:graphic-properties draw:stroke="none" '
+        f'draw:fill="none"/><style:text-properties {text}/></style:style>'
+        f'<style:style style:name="Default-background" style:family="presentation"><style:graphic-properties '
+        f'{fill}/></style:style>'
+        f'<style:style style:name="Default-backgroundobjects" style:family="presentation"/>'
+        f'<style:style style:name="Default-title" style:family="presentation"><style:graphic-properties '
+        f'draw:stroke="none" draw:fill="none" draw:textarea-vertical-align="bottom"/>'
+        f'<style:paragraph-properties fo:text-align="start"/>'
+        f'<style:text-properties {text} fo:font-size="40pt" fo:font-weight="bold" fo:color="{title_color}" '
+        'fo:letter-spacing="-0.02cm"/></style:style>'
+        f'<style:style style:name="Default-subtitle" style:family="presentation"><style:graphic-properties '
+        f'draw:stroke="none" draw:fill="none" draw:textarea-vertical-align="top"/>'
+        f'<style:paragraph-properties fo:text-align="center"/>'
+        f'<style:text-properties {text} fo:font-size="24pt" fo:color="{accent}"/></style:style>'
+        f'<style:style style:name="Default-outline1" style:family="presentation"><style:graphic-properties '
+        f'draw:stroke="none" draw:fill="none" draw:textarea-vertical-align="top">{_bullets(accent)}'
+        f'</style:graphic-properties><style:paragraph-properties fo:margin-top="0.35cm" fo:margin-bottom="0.1cm" '
+        f'fo:line-height="115%"/><style:text-properties {text} fo:font-size="26pt" fo:color="{body_color}"/>'
+        '</style:style>' + outline +
+        f'<style:style style:name="Default-notes" style:family="presentation"><style:text-properties {text} '
+        'fo:font-size="16pt"/></style:style>'
+        '<style:presentation-page-layout style:name="AL1T0">'
+        f'<presentation:placeholder presentation:object="title" {_box(*TITLE_SLIDE["title"])}/>'
+        f'<presentation:placeholder presentation:object="subtitle" {_box(*TITLE_SLIDE["subtitle"])}/>'
+        '</style:presentation-page-layout>'
+        '<style:presentation-page-layout style:name="AL2T1">'
+        f'<presentation:placeholder presentation:object="title" {_box(*CONTENT_SLIDE["title"])}/>'
+        f'<presentation:placeholder presentation:object="outline" {_box(*CONTENT_SLIDE["outline"])}/>'
+        '</style:presentation-page-layout>')
+    auto = (
+        f'<style:page-layout style:name="PM1"><style:page-layout-properties fo:margin-top="0cm" '
+        f'fo:margin-bottom="0cm" fo:margin-left="0cm" fo:margin-right="0cm" fo:page-width="{SLIDE_W}cm" '
+        f'fo:page-height="{SLIDE_H}cm" style:print-orientation="landscape"/></style:page-layout>'
+        f'<style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties {fill} '
+        'presentation:background-visible="true" presentation:background-objects-visible="true" '
+        'presentation:display-footer="false" presentation:display-page-number="false" '
+        'presentation:display-date-time="false"/></style:style>'
+        '<style:style style:name="dp2" style:family="drawing-page"><style:drawing-page-properties '
+        'presentation:background-visible="true" presentation:background-objects-visible="true"/></style:style>'
+        '<style:style style:name="pr-hero" style:family="presentation" style:parent-style-name="Default-title">'
+        '<style:graphic-properties draw:textarea-vertical-align="bottom"/>'
+        '<style:text-properties fo:font-size="54pt"/></style:style>'
+        '<style:style style:name="P-center" style:family="paragraph"><style:paragraph-properties '
+        'fo:text-align="center"/></style:style>'
+        '<style:style style:name="P-hero" style:family="paragraph"><style:paragraph-properties '
+        'fo:text-align="center"/><style:text-properties fo:font-size="54pt"/></style:style>'
+        + _bullets(accent, "L1"))
+
+    def frame(cls, box, body, style=None):
+        style = style or {"title": "Default-title", "subtitle": "Default-subtitle",
+                          "outline": "Default-outline1"}[cls]
+        return (f'<draw:frame presentation:style-name="{style}" draw:layer="layout" {_box(*box)} '
+                f'presentation:class="{cls}" presentation:placeholder="false" presentation:user-transformed="true">'
+                f'<draw:text-box>{body}</draw:text-box></draw:frame>')
+
+    master = (f'<style:master-page style:name="Default" style:page-layout-name="PM1" draw:style-name="dp1">'
+              f'<draw:frame presentation:style-name="Default-title" draw:layer="backgroundobjects" '
+              f'{_box(*CONTENT_SLIDE["title"])} presentation:class="title" presentation:placeholder="true">'
+              '<draw:text-box/></draw:frame>'
+              f'<draw:frame presentation:style-name="Default-outline1" draw:layer="backgroundobjects" '
+              f'{_box(*CONTENT_SLIDE["outline"])} presentation:class="outline" presentation:placeholder="true">'
+              '<draw:text-box/></draw:frame>'
+              '<presentation:notes style:page-layout-name="PM1"/></style:master-page>')
+    items = ["Where we are today", "What we’re proposing", "What it costs, and when", "Next steps"]
+    bullets = '<text:list text:style-name="L1">' + "".join(f"<text:list-item><text:p>{escape(t)}</text:p></text:list-item>"
+                                      for t in items) + "</text:list>"
+    slides = (
+        '<draw:page draw:name="Title" draw:style-name="dp2" draw:master-page-name="Default" '
+        'presentation:presentation-page-layout-name="AL1T0">'
+        + frame("title", TITLE_SLIDE["title"], '<text:p text:style-name="P-hero">Presentation Title</text:p>',
+                style="pr-hero")
+        + frame("subtitle", TITLE_SLIDE["subtitle"], '<text:p text:style-name="P-center">Subtitle or presenter</text:p>')
+        + '</draw:page>'
+        '<draw:page draw:name="Agenda" draw:style-name="dp2" draw:master-page-name="Default" '
+        'presentation:presentation-page-layout-name="AL2T1">'
+        + frame("title", CONTENT_SLIDE["title"], "<text:p>Agenda</text:p>")
+        + frame("outline", CONTENT_SLIDE["outline"], bullets)
+        + '</draw:page>')
+    doc = (f'<?xml version="1.0" encoding="UTF-8"?>\n<office:document {PNS} office:version="1.3" '
+           f'office:mimetype="application/vnd.oasis.opendocument.presentation">{FONTS}'
+           f'<office:styles>{styles}</office:styles><office:automatic-styles>{auto}</office:automatic-styles>'
+           f'<office:master-styles>{master}</office:master-styles>'
+           f'<office:body><office:presentation>{slides}</office:presentation></office:body></office:document>\n')
+    with open(os.path.join(OUT, name + ".fodp"), "w", encoding="utf-8") as f:
+        f.write(doc)
+
+
+def presentations():
+    slides_doc("blank-slides", "#ffffff", INK, "#3a3a3c", ACCENT)
+    slides_doc("black", "#000000", "#ffffff", "#d2d2d7", "#8ab4f8")
+    slides_doc("slate", "#1f2933", "#ffffff", "#cbd2d9", "#f5b942")
+    slides_doc("gradient", None, "#ffffff", "#eef2ff", "#dfe7ff", gradient=("#2a6fdb", "#7b3fd1"))
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     documents()
     spreadsheets()
+    presentations()
     print("Templates written to", os.path.normpath(OUT))

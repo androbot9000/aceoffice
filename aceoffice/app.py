@@ -3,6 +3,7 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import os
+import shutil
 import sys
 import threading
 
@@ -15,7 +16,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 from . import __version__, lok  # noqa: E402
 from .widgets import swatch_css  # noqa: E402
 from .manager import blank_template  # noqa: E402
-from .window import OPEN_PATTERNS, PRESENTATIONS_ENABLED, DocumentWindow  # noqa: E402
+from .window import OPEN_PATTERNS, DocumentWindow  # noqa: E402
 
 APP_ID = "io.github.androbot9000.AceOffice"
 
@@ -66,6 +67,18 @@ list.ace-comment-list { background: transparent; }
 .ace-comment-entry { border-radius: 8px; background: alpha(currentColor, 0.05); }
 .ace-swatch { min-width: 24px; min-height: 24px; padding: 0; border-radius: 6px;
               box-shadow: inset 0 0 0 1px alpha(black, 0.15); }
+/* Presentations: the slide navigator, as in Keynote, and Play. */
+.ace-slide-navigator { background-color: alpha(currentColor, 0.035); border-right: 1px solid alpha(currentColor, 0.1); }
+list.ace-slide-list { background: transparent; padding: 6px 0; }
+.ace-slide-list > row { padding: 0; border-radius: 8px; margin: 0 6px; background: none; }
+.ace-slide-list > row:selected { background: none; }
+.ace-slide-thumb { border-radius: 3px; background: white;
+                   box-shadow: 0 0 0 1px alpha(black, 0.14), 0 1px 3px alpha(black, 0.16); }
+.ace-slide-list > row:selected .ace-slide-thumb { box-shadow: 0 0 0 3px @accent_bg_color; }
+.ace-slide-list > row:selected label { color: @accent_color; opacity: 1; font-weight: 700; }
+window.ace-presenter, window.ace-presenter stack { background: black; }
+.ace-presenter-end { color: alpha(white, 0.6); }
+.ace-layout-button { padding: 6px 4px; }
 .ace-swatch-none { background: linear-gradient(to top right, transparent 46%, #c01c28 48%, #c01c28 52%, transparent 54%); }
 """
 
@@ -128,9 +141,14 @@ class AceOfficeApp(Adw.Application):
                                ("win.export-pdf", ["<Ctrl>p"]), ("win.zoom-in", ["<Ctrl>plus", "<Ctrl>equal"]),
                                ("win.zoom-out", ["<Ctrl>minus"]), ("win.zoom-reset", ["<Ctrl>0"]),
                                ("win.find", ["<Ctrl>f"]), ("win.format-panel", ["<Ctrl><Shift>f"]),
+                               # Keynote: Option-Command-P plays; PowerPoint: F5 from the start.
+                               ("win.play", ["<Ctrl><Alt>p", "<Shift>F5"]), ("win.play-beginning", ["F5"]),
+                               ("win.slide-new", ["<Ctrl><Shift>n"]), ("win.slide-duplicate", ["<Ctrl>d"]),
                                ("window.close", ["<Ctrl>w"])]:
             self.set_accels_for_action(action, accels)
 
+        # Copies of templates opened last time (see window.private_copy).
+        shutil.rmtree(os.path.join(GLib.get_user_cache_dir(), "aceoffice", "open"), ignore_errors=True)
         # Starting LibreOffice takes a few seconds; do it while the start page is up.
         threading.Thread(target=self._start_office, daemon=True).start()
 
@@ -184,9 +202,8 @@ class AceOfficeApp(Adw.Application):
                 self.open_path(f.get_path())
 
     def new(self, kind):
-        """A blank document of kind ('text' or 'spreadsheet'), from AceOffice's Blank template."""
-        if kind == "presentation" and not PRESENTATIONS_ENABLED:
-            return
+        """A blank document of kind ('text', 'spreadsheet' or 'presentation'), from AceOffice's
+        Blank template."""
         win = self._target_window()
         try:
             template = blank_template(kind)

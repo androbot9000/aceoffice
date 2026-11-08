@@ -3,10 +3,38 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #
-# Unpack LibreOffice from the distro archive into ~/.local/share/aceoffice/runtime
-# without root, for developing AceOffice on a machine without LibreOffice installed.
-# Debian/Ubuntu only. If you can, just: sudo apt install libreoffice-writer libreoffice-calc libreoffice-impress
+# A LibreOffice for developing AceOffice, unpacked without root.
+#
+#   tools/dev-runtime.sh            The Document Foundation's build (the one the Flatpak
+#                                   ships), in ~/.local/share/aceoffice/runtime-official.
+#                                   Needed for presentations: Ubuntu's build paints slides
+#                                   blank through LibreOfficeKit (issue #1).
+#   tools/dev-runtime.sh --distro   Your distro's packages, in ~/.local/share/aceoffice/runtime
+#                                   (Debian/Ubuntu only; documents and spreadsheets only).
 set -euo pipefail
+
+LO_VERSION=26.2.7
+LO_SHA256=8cd04a88396a9230264ff784ec89cc090cbfd0960c192483ba2b80fa53939416
+
+if [ "${1:-}" != "--distro" ]; then
+    ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+    DEST="${XDG_DATA_HOME:-$HOME/.local/share}/aceoffice/runtime-official"
+    CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/aceoffice"
+    TARBALL="$CACHE/LibreOffice_${LO_VERSION}_Linux_x86-64_deb.tar.gz"
+    mkdir -p "$CACHE"
+    if ! echo "$LO_SHA256  $TARBALL" | sha256sum -c --status 2>/dev/null; then
+        echo "Downloading LibreOffice $LO_VERSION from libreoffice.org (210 MB)…"
+        curl -fL --progress-bar -o "$TARBALL.part" \
+            "https://download.documentfoundation.org/libreoffice/stable/$LO_VERSION/deb/x86_64/$(basename "$TARBALL")" \
+          || curl -fL --progress-bar -o "$TARBALL.part" \
+            "https://downloadarchive.documentfoundation.org/libreoffice/old/$LO_VERSION.3/deb/x86_64/LibreOffice_${LO_VERSION}.3_Linux_x86-64_deb.tar.gz"
+        echo "$LO_SHA256  $TARBALL.part" | sha256sum -c --quiet
+        mv "$TARBALL.part" "$TARBALL"
+    fi
+    "$ROOT/tools/unpack-libreoffice.sh" "$TARBALL" "$DEST"
+    echo "Run AceOffice with:  ./run.sh"
+    exit 0
+fi
 
 DEST="${XDG_DATA_HOME:-$HOME/.local/share}/aceoffice/runtime"
 WORK="$(mktemp -d)"

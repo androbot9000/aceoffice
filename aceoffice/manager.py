@@ -25,6 +25,10 @@ TEMPLATES = {
                      ("budget", "budget.fods", "Budget", "spreadsheet"),
                      ("checklist", "checklist.fods", "Checklist", "spreadsheet"),
                      ("invoice", "invoice.fods", "Invoice", "spreadsheet")],
+    "Presentations": [("blank-slides", "blank-slides.fodp", "White", "presentation"),
+                      ("black", "black.fodp", "Black", "presentation"),
+                      ("slate", "slate.fodp", "Slate", "presentation"),
+                      ("gradient", "gradient.fodp", "Gradient", "presentation")],
 }
 
 
@@ -33,7 +37,8 @@ def template_path(name):
 
 
 def blank_template(kind):
-    return template_path({"text": "blank.fodt", "spreadsheet": "blank-sheet.fods"}[kind])
+    return template_path({"text": "blank.fodt", "spreadsheet": "blank-sheet.fods",
+                          "presentation": "blank-slides.fodp"}[kind])
 
 
 def _when(mtime):
@@ -64,10 +69,11 @@ class Card(Gtk.Button):
     """A file or template: a page thumbnail with its name underneath."""
     __gtype_name__ = "AceCard"
 
-    def __init__(self, title, subtitle=None, gicon=None, landscape=False):
+    def __init__(self, title, subtitle=None, gicon=None, shape="page"):
         super().__init__(css_classes=["flat", "ace-card"], halign=Gtk.Align.CENTER, valign=Gtk.Align.END)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        w, h = (180, 135) if landscape else (150, 194)
+        # A page, a sheet (4:3) or a slide (16:9).
+        w, h = {"page": (150, 194), "sheet": (180, 135), "slide": (192, 108)}[shape]
         self.frame = Gtk.Box(css_classes=["ace-thumb"], halign=Gtk.Align.CENTER, valign=Gtk.Align.END,
                              overflow=Gtk.Overflow.HIDDEN)
         self.frame.set_size_request(w, h)
@@ -149,8 +155,8 @@ class StartPage(Gtk.Box):
                                     css_classes=["dim-label"]))
         self.empty_label = Gtk.Label(label="No documents yet", css_classes=["title-3"])
         self.empty.append(self.empty_label)
-        self.empty.append(Gtk.Label(label="Create one with New Document, or open a Word, Excel, Pages or "
-                                          "Numbers file with Ctrl+O.", css_classes=["dim-label"], wrap=True,
+        self.empty.append(Gtk.Label(label="Create one with New Document, or open a Word, Excel, PowerPoint, "
+                                          "Pages, Numbers or Keynote file with Ctrl+O.", css_classes=["dim-label"], wrap=True,
                                     justify=Gtk.Justification.CENTER, max_width_chars=50))
         self.engine_status = Gtk.Label(css_classes=["dim-label", "caption"], visible=False, margin_bottom=8)
         scroller = Gtk.ScrolledWindow(child=self.grid, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
@@ -197,8 +203,10 @@ class StartPage(Gtk.Box):
         files = self._files()
         for mtime, path in files:
             info = Gio.content_type_guess(path, None)[0]
-            landscape = path.lower().endswith((".xlsx", ".xls", ".ods", ".csv", ".numbers"))
-            card = Card(os.path.basename(path), _when(mtime), Gio.content_type_get_icon(info), landscape)
+            ext = os.path.splitext(path)[1].lower()
+            shape = ("sheet" if ext in (".xlsx", ".xls", ".ods", ".csv", ".numbers") else
+                     "slide" if ext in (".pptx", ".ppt", ".odp", ".key") else "page")
+            card = Card(os.path.basename(path), _when(mtime), Gio.content_type_get_icon(info), shape)
             card.path = path
             card.connect("clicked", lambda c: self.app.open_path(c.path, self.win))
             card.set_tooltip_text(path.replace(os.path.expanduser("~"), "~"))
@@ -234,9 +242,10 @@ class TemplateChooser(Gtk.ScrolledWindow):
             flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True, row_spacing=14,
                                column_spacing=12, max_children_per_line=8, valign=Gtk.Align.START)
             for tid, name, title, kind in items:
-                card = Card(title, gicon=Gio.ThemedIcon.new("x-office-document-symbolic"
-                                                            if kind == "text" else "x-office-spreadsheet-symbolic"),
-                            landscape=kind == "spreadsheet")
+                icon = {"text": "x-office-document-symbolic", "spreadsheet": "x-office-spreadsheet-symbolic",
+                        "presentation": "x-office-presentation-symbolic"}[kind]
+                card = Card(title, gicon=Gio.ThemedIcon.new(icon),
+                            shape={"text": "page", "spreadsheet": "sheet", "presentation": "slide"}[kind])
                 card.template = (template_path(name), title, kind)
                 card.connect("clicked", lambda c: self.win.app.new_from_template(*c.template, reuse=self.win))
                 flow.append(card)
