@@ -7,15 +7,22 @@ document engine, LibreOfficeKit, underneath. You get LibreOffice's compatibility
 with Word and Excel files, and its Pages and Numbers importers, in an interface
 that feels at home next to the rest of your desktop.
 
-![Writing a document](docs/screenshot-document.png)
+![Writing a document, with the labelled toolbar and a comment](docs/screenshot-document.png)
+![Choosing a template](docs/screenshot-templates.png)
 ![A spreadsheet with a formula](docs/screenshot-spreadsheet.png)
-![The Format sidebar's page setup](docs/screenshot-format-sidebar.png)
 
 > **Early preview (0.1).** Documents and spreadsheets work. Presentations are
 > switched off until slide rendering is fixed ([#1](https://github.com/androbot9000/aceoffice/issues/1)).
 
 ## What works
 
+- **A Mac-style start window:** your recent files and folders as page thumbnails, with search,
+  and **templates** for new files (Report, Letter, Résumé, Essay; Budget, Checklist, Invoice),
+  like Pages and Numbers. Ctrl+N opens the template chooser.
+- **A labelled toolbar in the title bar:** Insert (page breaks, page numbers, dates, footnotes,
+  links), Table (pick the size), Chart, Text box, Shape, Image and Comment. In spreadsheets, Sort
+  and Filter too. **Format** and **Document** open the sidebar, as in Pages.
+- **Comments** in their own sidebar tab, with replies, signed with your name.
 - **Documents:** type and format text (font, size, bold, italic, underline,
   strikethrough, text color and highlight, alignment, line spacing, indents, lists,
   paragraph styles), insert images, undo and redo, spell checking. The **Format sidebar**
@@ -59,7 +66,12 @@ Ctrl+P export PDF, Ctrl+W close, Ctrl+B/I/U formatting, Ctrl+Z/Ctrl+Shift+Z undo
 |---|---|
 | `aceoffice/lok.py` | ctypes bindings for the LibreOfficeKit C API |
 | `aceoffice/docview.py` | GTK 4 widget: draws LibreOffice's tiles, the caret and selections, and forwards keyboard, mouse and clipboard |
-| `aceoffice/window.py` | Start page, toolbar, formula bar, sheet tabs, status bar, saving |
+| `aceoffice/window.py` | The window: toolbar, formula bar, sheet tabs, status bar, sidebar, saving |
+| `aceoffice/manager.py` | Start window (recent files with thumbnails) and the template chooser |
+| `aceoffice/tools.py` | The labelled toolbar and its Insert, Table, Chart, Shape and Comment commands |
+| `aceoffice/comments.py` | The Comments sidebar tab |
+| `aceoffice/thumbs.py` | Page thumbnails, rendered by LibreOffice on a worker thread and cached |
+| `aceoffice/templates/` | Starter templates as flat ODF, written by `tools/make-templates.py` |
 | `aceoffice/headers.py` | Spreadsheet row and column headers |
 | `aceoffice/inspector.py` | Formatting controls and the Format sidebar, including page setup |
 | `aceoffice/widgets.py` | Colour buttons, measurement units |

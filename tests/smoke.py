@@ -83,6 +83,14 @@ def step_start():
     win = app.get_active_window()
     check("engine started", app.office is not None)
     shot(win, "1-start")
+    win.show_templates()
+    cards = win.templates.cards
+    loop_until(lambda: all(c.picture.get_visible() for c in cards), 30000)
+    check(f"template thumbnails rendered ({sum(c.picture.get_visible() for c in cards)} of {len(cards)})",
+          all(c.picture.get_visible() for c in cards))
+    loop_until(lambda: False, 300)
+    shot(win, "1b-templates")
+    win.show_start()
     app.new("text")
     wait(lambda: editor_win().doc is not None, step_text)
 
@@ -214,6 +222,7 @@ def loop_until(pred, ms):
 def step_text_shot():
     win = editor_win()
     check("document marked modified", win.modified)
+    check(f"a new document is called Untitled ({win._display_name()})", win._display_name() == "Untitled")
     check(f"status bar shows pages and words ({win.status_label.get_label()!r})",
           "Page 1 of 1" in win.status_label.get_label() and "words" in win.status_label.get_label())
     font = win.fmt._fonts[0].get_selected_item()
@@ -309,6 +318,28 @@ def step_reopen():
         print("  shortcuts:", e, flush=True)
         ok = False
     check("keyboard shortcuts dialog opens", ok)
+    step_recents()
+
+
+def step_recents():
+    """A fresh window lists the files saved above, with page thumbnails."""
+    win = appmod.DocumentWindow(app)
+    win.present()
+    win.show_start()
+    grid = win.start.grid
+
+    def cards():
+        out, child = [], grid.get_first_child()
+        while child:
+            out.append(child.get_child())
+            child = child.get_next_sibling()
+        return out
+    loop_until(lambda: len(cards()) >= 2 and all(c.picture.get_visible() for c in cards()), 20000)
+    names = sorted(c.title for c in cards())
+    check(f"recent files listed with thumbnails ({names})", "Notes.docx" in names and "Budget.xlsx" in names
+          and all(c.picture.get_visible() for c in cards()))
+    loop_until(lambda: False, 400)
+    shot(win, "6-start-recents")
     finish()
 
 

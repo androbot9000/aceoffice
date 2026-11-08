@@ -14,6 +14,7 @@ from . import lok
 from .docview import DocView
 from .headers import SheetHeaders
 from .inspector import Formatting, Inspector
+from .manager import StartPage, TemplateChooser
 from .tools import Tools, tool_button
 from .lok import uno_args
 
@@ -65,13 +66,11 @@ class DocumentWindow(Adw.ApplicationWindow):
         header = self.header = Adw.HeaderBar(title_widget=self.title)
         self.tools = None
 
-        new_menu = Gio.Menu()
-        new_menu.append("Document", "app.new-document")
-        new_menu.append("Spreadsheet", "app.new-spreadsheet")
-        if PRESENTATIONS_ENABLED:
-            new_menu.append("Presentation", "app.new-presentation")
-        self.new_button = Gtk.MenuButton(icon_name="document-new-symbolic", menu_model=new_menu,
-                                         tooltip_text="New")
+        self.new_button = Gtk.Button(icon_name="document-new-symbolic", action_name="win.choose-template",
+                                     tooltip_text="New from a template (Ctrl+N)")
+        self.back_button = Gtk.Button(icon_name="go-previous-symbolic", tooltip_text="Back", visible=False)
+        self.back_button.connect("clicked", lambda *_: self.show_start())
+        header.pack_start(self.back_button)
         self.open_button = Gtk.Button(icon_name="document-open-symbolic", action_name="app.open",
                                       tooltip_text="Open… (Ctrl+O)")
         header.pack_start(self.new_button)
@@ -79,6 +78,7 @@ class DocumentWindow(Adw.ApplicationWindow):
 
         main_menu = Gio.Menu()
         file_section = Gio.Menu()
+        file_section.append("New from Template…", "app.new")
         file_section.append("New Document", "app.new-document")
         file_section.append("New Spreadsheet", "app.new-spreadsheet")
         file_section.append("Open…", "app.open")
@@ -113,13 +113,20 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.split = None
 
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
-        self.stack.add_named(self._build_start_page(), "start")
+        self.start = StartPage(self, OPEN_PATTERNS)
+        self.stack.add_named(self.start, "start")
+        self.templates = TemplateChooser(self)
+        self.stack.add_named(self.templates, "templates")
+        if app.office:
+            self.start.refresh()
+            self.templates.load_thumbnails(app.office)
+        self.template_title = None
         self.loading = Adw.StatusPage(title="Opening…")
         self.loading.set_child(Adw.Spinner() if hasattr(Adw, "Spinner") else Gtk.Spinner(spinning=True))
         self.stack.add_named(self.loading, "loading")
         self.error_page = Adw.StatusPage(icon_name="dialog-error-symbolic", title="Something went wrong")
         back = Gtk.Button(label="Back", halign=Gtk.Align.CENTER, css_classes=["pill"])
-        back.connect("clicked", lambda *_: self.stack.set_visible_child_name("start"))
+        back.connect("clicked", lambda *_: self.show_start())
         self.error_page.set_child(back)
         self.stack.add_named(self.error_page, "error")
 
@@ -136,7 +143,8 @@ class DocumentWindow(Adw.ApplicationWindow):
                          ("cut", lambda: self.view.cut()), ("copy", lambda: self.view.copy()),
                          ("paste", lambda: self.view.paste()),
                          ("select-all", lambda: self.doc.uno(".uno:SelectAll")),
-                         ("format-panel", lambda: self._on_sidebar_toggle(self.format_button))]:
+                         ("format-panel", lambda: self._on_sidebar_toggle(self.format_button)),
+                         ("choose-template", self.show_templates)]:
             action = Gio.SimpleAction(name=name)
             action.connect("activate", lambda _a, _p, cb=cb: cb())
             self.add_action(action)
@@ -156,66 +164,29 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     # --- start page -------------------------------------------------------------
 
-    def _build_start_page(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24, valign=Gtk.Align.CENTER,
-                      halign=Gtk.Align.CENTER, margin_top=36, margin_bottom=36, margin_start=24, margin_end=24)
-        box.append(Gtk.Label(label="AceOffice", css_classes=["title-1"]))
-        blurb = ("Documents, spreadsheets and presentations. Opens Word, Excel, PowerPoint, "
-                 "and your old Pages, Numbers and Keynote files." if PRESENTATIONS_ENABLED else
-                 "Documents and spreadsheets. Opens Word and Excel files, "
-                 "and your old Pages and Numbers files.")
-        box.append(Gtk.Label(label=blurb,
-                             css_classes=["dim-label"], wrap=True, justify=Gtk.Justification.CENTER,
-                             max_width_chars=60))
+    def show_templates(self):
+        if self.doc is not None:
+            # One document per window: choose the template in a fresh window.
+            self.app.show_templates()
+            return
+        self.stack.set_visible_child_name("templates")
+        self.back_button.set_visible(True)
+        self.title.set_title("New")
 
-        cards = Gtk.Box(spacing=16, halign=Gtk.Align.CENTER, homogeneous=True)
-        kinds = [("Document", "x-office-document-symbolic", "app.new-document"),
-                 ("Spreadsheet", "x-office-spreadsheet-symbolic", "app.new-spreadsheet")]
-        if PRESENTATIONS_ENABLED:
-            kinds.append(("Presentation", "x-office-presentation-symbolic", "app.new-presentation"))
-        for label, icon, action in kinds:
-            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=18,
-                            margin_bottom=14, margin_start=18, margin_end=18)
-            inner.append(Gtk.Image(icon_name=icon, pixel_size=48))
-            inner.append(Gtk.Label(label=label, css_classes=["heading"]))
-            cards.append(Gtk.Button(child=inner, action_name=action, css_classes=["card", "ace-new-card"]))
-        box.append(cards)
+    def show_start(self):
+        self.stack.set_visible_child_name("start")
+        self.back_button.set_visible(False)
+        self.title.set_title("AceOffice")
+        self.start.refresh()
 
-        box.append(Gtk.Button(label="Open a File…", action_name="app.open", halign=Gtk.Align.CENTER,
-                              css_classes=["pill", "suggested-action"]))
-
-        self.engine_status = Gtk.Label(css_classes=["dim-label", "caption"], visible=False)
-        box.append(self.engine_status)
-
-        self.recent_group = Adw.PreferencesGroup(title="Recent")
-        self.recent_list = Gtk.ListBox(css_classes=["boxed-list"], selection_mode=Gtk.SelectionMode.NONE)
-        self.recent_group.add(self.recent_list)
-        box.append(self.recent_group)
-        self._fill_recent()
-
-        clamp = Adw.Clamp(maximum_size=640, child=box)
-        return Gtk.ScrolledWindow(child=clamp, hscrollbar_policy=Gtk.PolicyType.NEVER)
-
-    def _fill_recent(self):
-        while (row := self.recent_list.get_first_child()) is not None:
-            self.recent_list.remove(row)
-        exts = tuple(p[1:] for p in OPEN_PATTERNS)
-        items = [i for i in Gtk.RecentManager.get_default().get_items()
-                 if i.get_uri().startswith("file://") and i.get_uri().lower().endswith(exts) and i.exists()]
-        items.sort(key=lambda i: i.get_modified().to_unix(), reverse=True)
-        for item in items[:8]:
-            path = Gio.File.new_for_uri(item.get_uri()).get_path()
-            row = Adw.ActionRow(title=GLib.markup_escape_text(os.path.basename(path)),
-                                subtitle=GLib.markup_escape_text(os.path.dirname(path).replace(os.path.expanduser("~"), "~")),
-                                activatable=True)
-            row.add_prefix(Gtk.Image(gicon=item.get_gicon()))
-            row.connect("activated", lambda _r, p=path: self.app.open_path(p, self))
-            self.recent_list.append(row)
-        self.recent_group.set_visible(bool(items))
+    def office_ready(self, office):
+        self.set_engine_status(None)
+        if self.doc is None:
+            self.start.refresh()
+            self.templates.load_thumbnails(office)
 
     def set_engine_status(self, text):
-        self.engine_status.set_label(text or "")
-        self.engine_status.set_visible(bool(text))
+        self.start.set_engine_status(text)
 
     def show_error(self, title, message):
         self.error_page.set_title(title)
@@ -228,15 +199,18 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     # --- loading ------------------------------------------------------------------
 
-    def load(self, office, path=None, kind=None):
-        """Open path, or create a new document of kind. Runs the load off the UI thread."""
-        name = os.path.basename(path) if path else f"new {kind}"
+    def load(self, office, path=None, kind=None, template=None, title=None):
+        """Open path, or start a new document from a template file (or LibreOffice's blank
+        document of kind). Runs the load off the UI thread."""
+        name = os.path.basename(path) if path else f"new {(title or kind or 'document').lower()}"
         self.loading.set_title(f"Opening {name}…")
         self.stack.set_visible_child_name("loading")
+        self.back_button.set_visible(False)
+        self.template_title = title if template else None
 
         def work():
             try:
-                doc = office.load(path) if path else office.new(kind)
+                doc = office.load(path or template) if (path or template) else office.new(kind)
                 doc.initialize_for_rendering(author=GLib.get_real_name() or GLib.get_user_name())
                 GLib.idle_add(self._loaded, doc, path)
             except Exception as e:  # noqa: BLE001 - shown to the user
@@ -677,8 +651,9 @@ class DocumentWindow(Adw.ApplicationWindow):
             return os.path.basename(self.path)
         if self.imported_from:
             return os.path.basename(self._import_stem) + f".{DEFAULT_EXT[self.kind]}"
-        return {"text": "Untitled Document", "spreadsheet": "Untitled Spreadsheet",
-                "presentation": "Untitled Presentation"}[self.kind]
+        if self.template_title and self.template_title != "Blank":
+            return f"Untitled {self.template_title}"
+        return "Untitled"
 
     def _update_title(self):
         name = self._display_name()

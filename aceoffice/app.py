@@ -14,6 +14,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from . import __version__, lok  # noqa: E402
 from .widgets import swatch_css  # noqa: E402
+from .manager import blank_template  # noqa: E402
 from .window import OPEN_PATTERNS, PRESENTATIONS_ENABLED, DocumentWindow  # noqa: E402
 
 APP_ID = "io.github.androbot9000.AceOffice"
@@ -35,7 +36,18 @@ CSS = """
 /* A slightly deeper shade of the window behind the page. */
 .ace-canvas { background-color: alpha(currentColor, 0.07); }
 .ace-header { background-color: alpha(currentColor, 0.04); font-size: 9pt; font-feature-settings: "tnum"; }
-.ace-new-card { min-width: 150px; }
+/* Start window: places on the left, page thumbnails on the right, as in Pages' Open window. */
+.ace-start-sidebar { background-color: alpha(currentColor, 0.035); border-right: 1px solid alpha(currentColor, 0.1);
+                     padding: 10px 8px; }
+.ace-start-sidebar .navigation-sidebar { background: none; }
+.ace-sidebar-heading { font-size: 9pt; font-weight: 700; opacity: 0.55; margin: 4px 10px 6px; }
+.ace-start-top { padding: 16px 20px 10px; }
+.ace-new-button { padding-left: 16px; padding-right: 16px; }
+button.ace-card { padding: 8px 6px 6px; border-radius: 10px; }
+button.ace-card:hover { background: alpha(currentColor, 0.06); }
+.ace-thumb { background-color: white; border-radius: 3px; color: #555;
+             box-shadow: 0 0 0 1px alpha(black, 0.12), 0 2px 6px alpha(black, 0.18); }
+.ace-card-title { font-weight: 600; font-size: 10pt; }
 /* Toolbar items with a caption under the icon, as in Pages and Numbers. */
 .ace-tools { margin: 0 6px; }
 button.ace-tool { padding: 3px 7px 2px; min-width: 44px; border-radius: 7px; }
@@ -59,7 +71,7 @@ list.ace-comment-list { background: transparent; }
 
 
 SHORTCUTS = [
-    ("Files", [("New document", "<Ctrl>n"), ("Open", "<Ctrl>o"), ("Save", "<Ctrl>s"),
+    ("Files", [("New from a template", "<Ctrl>n"), ("Open", "<Ctrl>o"), ("Save", "<Ctrl>s"),
                ("Save as", "<Ctrl><Shift>s"), ("Export as PDF", "<Ctrl>p"), ("Close window", "<Ctrl>w"),
                ("Quit", "<Ctrl>q")]),
     ("Editing", [("Undo", "<Ctrl>z"), ("Redo", "<Ctrl><Shift>z"), ("Cut", "<Ctrl>x"), ("Copy", "<Ctrl>c"),
@@ -98,7 +110,8 @@ class AceOfficeApp(Adw.Application):
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         for name, cb, accels in [
-            ("new-document", lambda: self.new("text"), ["<Ctrl>n"]),
+            ("new", self.show_templates, ["<Ctrl>n"]),
+            ("new-document", lambda: self.new("text"), []),
             ("new-spreadsheet", lambda: self.new("spreadsheet"), []),
             ("new-presentation", lambda: self.new("presentation"), []),
             ("open", self.open_dialog, ["<Ctrl>o"]),
@@ -131,7 +144,9 @@ class AceOfficeApp(Adw.Application):
     def _office_ready(self, office, error):
         self.office, self.office_error = office, error
         for win in self.get_windows():
-            if isinstance(win, DocumentWindow):
+            if isinstance(win, DocumentWindow) and office:
+                win.office_ready(office)
+            elif isinstance(win, DocumentWindow):
                 win.set_engine_status(None)
         waiting, self._waiting = self._waiting, []
         for fn in waiting:
@@ -169,10 +184,26 @@ class AceOfficeApp(Adw.Application):
                 self.open_path(f.get_path())
 
     def new(self, kind):
+        """A blank document of kind ('text' or 'spreadsheet'), from AceOffice's Blank template."""
         if kind == "presentation" and not PRESENTATIONS_ENABLED:
             return
         win = self._target_window()
-        self._with_office(win, lambda: win.load(self.office, kind=kind))
+        try:
+            template = blank_template(kind)
+        except KeyError:
+            template = None
+        if template and os.path.exists(template):
+            self._with_office(win, lambda: win.load(self.office, template=template, title="Blank"))
+        else:
+            self._with_office(win, lambda: win.load(self.office, kind=kind))
+
+    def new_from_template(self, path, title, kind, reuse=None):
+        win = self._target_window(reuse)
+        self._with_office(win, lambda: win.load(self.office, template=path, title=title))
+
+    def show_templates(self):
+        win = self._target_window()
+        win.show_templates()
 
     def open_path(self, path, reuse=None):
         for win in self.get_windows():

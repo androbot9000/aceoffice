@@ -354,6 +354,18 @@ class Document:
     def set_part(self, n):
         self._c.setPart(self._d, n)
 
+    def page_rectangles(self):
+        """Writer's pages as [(x, y, w, h)] in twips."""
+        raw = _take_string(self._c.getPartPageRectangles(self._d)) or ""
+        rects = []
+        for chunk in raw.split(";"):
+            try:
+                x, y, w, h = (int(v) for v in chunk.split(","))
+            except ValueError:
+                continue
+            rects.append((x, y, w, h))
+        return rects
+
     def part_name(self, n):
         return _take_string(self._c.getPartName(self._d, n))
 
