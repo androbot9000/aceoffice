@@ -38,6 +38,7 @@ CALLBACK_SET_PART = 14
 CALLBACK_CELL_CURSOR = 17
 CALLBACK_MOUSE_POINTER = 18
 CALLBACK_CELL_FORMULA = 19
+CALLBACK_COMMENT = 32
 CALLBACK_INVALIDATE_HEADER = 33
 CALLBACK_CELL_ADDRESS = 34
 
@@ -331,8 +332,10 @@ class Document:
         self._c.registerCallback(self._d, self._cb, None)
 
     # lifecycle / info
-    def initialize_for_rendering(self):
-        self._c.initializeForRendering(self._d, b"{}")
+    def initialize_for_rendering(self, author=None):
+        """Prepare for painting. author names this user on comments and tracked changes."""
+        args = {".uno:Author": {"type": "string", "value": author}} if author else {}
+        self._c.initializeForRendering(self._d, json.dumps(args).encode())
 
     def doc_type(self):
         return self._c.getDocumentType(self._d)

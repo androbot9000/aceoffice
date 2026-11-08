@@ -36,6 +36,22 @@ CSS = """
 .ace-canvas { background-color: alpha(currentColor, 0.07); }
 .ace-header { background-color: alpha(currentColor, 0.04); font-size: 9pt; font-feature-settings: "tnum"; }
 .ace-new-card { min-width: 150px; }
+/* Toolbar items with a caption under the icon, as in Pages and Numbers. */
+.ace-tools { margin: 0 6px; }
+button.ace-tool { padding: 3px 7px 2px; min-width: 44px; border-radius: 7px; }
+button.ace-tool image { -gtk-icon-size: 16px; }
+.ace-tool-label { font-size: 8pt; opacity: 0.78; }
+button.ace-tool:checked { background: alpha(currentColor, 0.12); }
+/* Table size picker */
+.ace-table-cell { min-width: 16px; min-height: 16px; padding: 0; border-radius: 3px;
+                  background: alpha(currentColor, 0.06); box-shadow: inset 0 0 0 1px alpha(currentColor, 0.18); }
+.ace-table-cell.on { background: alpha(@accent_bg_color, 0.35); box-shadow: inset 0 0 0 1px @accent_bg_color; }
+/* Comments */
+list.ace-comment-list { background: transparent; }
+.ace-comment-list > row { padding: 0; margin-bottom: 8px; background: none; }
+.ace-comment { padding: 10px 12px 4px; border-radius: 10px; background: alpha(currentColor, 0.05);
+               border-left: 3px solid @accent_bg_color; }
+.ace-comment-entry { border-radius: 8px; background: alpha(currentColor, 0.05); }
 .ace-swatch { min-width: 24px; min-height: 24px; padding: 0; border-radius: 6px;
               box-shadow: inset 0 0 0 1px alpha(black, 0.15); }
 .ace-swatch-none { background: linear-gradient(to top right, transparent 46%, #c01c28 48%, #c01c28 52%, transparent 54%); }
@@ -71,6 +87,9 @@ class AceOfficeApp(Adw.Application):
         data = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         if os.path.isdir(data):
             Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).add_search_path(data)
+        # AceOffice's own toolbar icons (table, chart, shape, comment, …).
+        icons = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons")
+        Gtk.IconTheme.get_for_display(Gdk.Display.get_default()).add_search_path(icons)
         Gtk.Window.set_default_icon_name(APP_ID)
 
         css = Gtk.CssProvider()

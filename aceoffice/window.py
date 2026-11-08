@@ -14,6 +14,7 @@ from . import lok
 from .docview import DocView
 from .headers import SheetHeaders
 from .inspector import Formatting, Inspector
+from .tools import Tools, tool_button
 from .lok import uno_args
 
 KINDS = {
@@ -61,19 +62,27 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.grid_visible = True
 
         self.title = Adw.WindowTitle(title="AceOffice")
-        header = Adw.HeaderBar(title_widget=self.title)
+        header = self.header = Adw.HeaderBar(title_widget=self.title)
+        self.tools = None
 
         new_menu = Gio.Menu()
         new_menu.append("Document", "app.new-document")
         new_menu.append("Spreadsheet", "app.new-spreadsheet")
         if PRESENTATIONS_ENABLED:
             new_menu.append("Presentation", "app.new-presentation")
-        header.pack_start(Gtk.MenuButton(icon_name="document-new-symbolic", menu_model=new_menu,
-                                         tooltip_text="New"))
-        header.pack_start(Gtk.Button(icon_name="document-open-symbolic", action_name="app.open",
-                                     tooltip_text="Open… (Ctrl+O)"))
+        self.new_button = Gtk.MenuButton(icon_name="document-new-symbolic", menu_model=new_menu,
+                                         tooltip_text="New")
+        self.open_button = Gtk.Button(icon_name="document-open-symbolic", action_name="app.open",
+                                      tooltip_text="Open… (Ctrl+O)")
+        header.pack_start(self.new_button)
+        header.pack_start(self.open_button)
 
         main_menu = Gio.Menu()
+        file_section = Gio.Menu()
+        file_section.append("New Document", "app.new-document")
+        file_section.append("New Spreadsheet", "app.new-spreadsheet")
+        file_section.append("Open…", "app.open")
+        main_menu.append_section(None, file_section)
         file_section = Gio.Menu()
         file_section.append("Save As…", "win.save-as")
         file_section.append("Export as PDF…", "win.export-pdf")
@@ -84,18 +93,24 @@ class DocumentWindow(Adw.ApplicationWindow):
         view_section.append("Actual Size", "win.zoom-reset")
         main_menu.append_section(None, view_section)
         view_section.prepend("Find…", "win.find")
+        view_section.append("Show Format Bar", "win.show-format-bar")
         app_section = Gio.Menu()
         app_section.append("Keyboard Shortcuts", "app.shortcuts")
         app_section.append("About AceOffice", "app.about")
         main_menu.append_section(None, app_section)
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=main_menu,
                                        primary=True, tooltip_text="Main Menu"))
-        self.format_button = Gtk.ToggleButton(icon_name="sidebar-show-right-symbolic", visible=False,
-                                              tooltip_text="Format (Ctrl+Shift+F)")
+        # Format and Document open the sidebar on its formatting or page tab, as in Pages.
+        self.document_button = self._sidebar_toggle("ace-document-symbolic", "Document",
+                                                    "Paper, margins and sheet settings")
+        self.format_button = self._sidebar_toggle("ace-format-symbolic", "Format", "Format (Ctrl+Shift+F)")
+        header.pack_end(self.document_button)
         header.pack_end(self.format_button)
         self.save_button = Gtk.Button(icon_name="document-save-symbolic", action_name="win.save",
                                       tooltip_text="Save (Ctrl+S)", visible=False)
         header.pack_end(self.save_button)
+        self._toggling = False
+        self.split = None
 
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
         self.stack.add_named(self._build_start_page(), "start")
@@ -121,10 +136,21 @@ class DocumentWindow(Adw.ApplicationWindow):
                          ("cut", lambda: self.view.cut()), ("copy", lambda: self.view.copy()),
                          ("paste", lambda: self.view.paste()),
                          ("select-all", lambda: self.doc.uno(".uno:SelectAll")),
-                         ("format-panel", lambda: self.format_button.set_active(not self.format_button.get_active()))]:
+                         ("format-panel", lambda: self._on_sidebar_toggle(self.format_button))]:
             action = Gio.SimpleAction(name=name)
             action.connect("activate", lambda _a, _p, cb=cb: cb())
             self.add_action(action)
+        show_bar = Gio.SimpleAction.new_stateful("show-format-bar", None,
+                                                 GLib.Variant.new_boolean(load_state().get("format_bar", True)))
+        show_bar.connect("change-state", self._on_show_format_bar)
+        self.add_action(show_bar)
+        self.format_bar = None
+
+        # Narrow windows: drop the captions under the toolbar icons.
+        narrow = Adw.Breakpoint.new(Adw.BreakpointCondition.parse("max-width: 980sp"))
+        narrow.connect("apply", lambda *_: self.tools and self.tools.set_labels_visible(False))
+        narrow.connect("unapply", lambda *_: self.tools and self.tools.set_labels_visible(True))
+        self.add_breakpoint(narrow)
         self._set_doc_actions(False)
         self.connect("close-request", self._on_close_request)
 
@@ -211,7 +237,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         def work():
             try:
                 doc = office.load(path) if path else office.new(kind)
-                doc.initialize_for_rendering()
+                doc.initialize_for_rendering(author=GLib.get_real_name() or GLib.get_user_name())
                 GLib.idle_add(self._loaded, doc, path)
             except Exception as e:  # noqa: BLE001 - shown to the user
                 GLib.idle_add(self.show_error, f"Couldn't open {name}", str(e))
@@ -250,6 +276,15 @@ class DocumentWindow(Adw.ApplicationWindow):
         self._set_doc_actions(True)
         self.save_button.set_visible(True)
         self.format_button.set_visible(True)
+        self.document_button.set_visible(self.kind in ("text", "spreadsheet"))
+        # The document's name moves to the left and the labelled tools take the middle.
+        self.new_button.set_visible(False)
+        self.open_button.set_visible(False)
+        self.header.set_title_widget(self.tools.build())
+        self.title.set_halign(Gtk.Align.START)
+        self.header.pack_start(self.title)
+        if load_state().get("inspector", True):
+            self.show_inspector(None)
         self._update_title()
         if self.kind == "text":
             GLib.idle_add(self._initial_fit)
@@ -272,7 +307,10 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     def _build_editor(self):
         self.fmt = Formatting(self)
-        for bar in (self._build_format_bar(),
+        self.tools = Tools(self)
+        self.format_bar = Gtk.Revealer(child=self._build_format_bar(),
+                                       reveal_child=self.lookup_action("show-format-bar").get_state().get_boolean())
+        for bar in (self.format_bar,
                     self._build_formula_bar() if self.kind == "spreadsheet" else None,
                     self._build_find_bar()):
             if bar:
@@ -299,13 +337,69 @@ class DocumentWindow(Adw.ApplicationWindow):
         main.append(self._build_status_bar())
 
         self.inspector = Inspector(self, self.fmt)
-        split = Adw.OverlaySplitView(content=main, sidebar=self.inspector, sidebar_position=Gtk.PackType.END,
-                                     show_sidebar=False, min_sidebar_width=270, max_sidebar_width=320,
-                                     css_classes=["ace-split"])
-        self.format_button.bind_property("active", split, "show-sidebar",
-                                         GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE)
-        split.connect("notify::show-sidebar", lambda sv, _p: sv.get_show_sidebar() and self.inspector.refresh())
+        self.view.connect("comment", lambda _v, p: self.inspector.comments and self.inspector.comments.changed(p))
+        split = self.split = Adw.OverlaySplitView(
+            content=main, sidebar=self.inspector, sidebar_position=Gtk.PackType.END, show_sidebar=False,
+            min_sidebar_width=270, max_sidebar_width=320, css_classes=["ace-split"])
+        split.connect("notify::show-sidebar", self._on_sidebar_shown)
+        self.inspector.stack.connect("notify::visible-child-name", lambda *_: self._sync_sidebar_toggles())
         return split
+
+    # --- sidebar (Format / Document) ----------------------------------------------
+
+    def _sidebar_toggle(self, icon, label, tooltip):
+        toggle = tool_button(icon, label, tooltip, toggle=True)
+        toggle.set_visible(False)
+        toggle.connect("toggled", lambda t: not self._toggling and self._on_sidebar_toggle(t, clicked=True))
+        return toggle
+
+    def _tab_for(self, button):
+        format_tab = {"text": "text", "spreadsheet": "cell"}.get(self.kind, "text")
+        doc_tab = {"text": "document", "spreadsheet": "sheet"}.get(self.kind, format_tab)
+        return format_tab if button is self.format_button else doc_tab
+
+    def _on_sidebar_toggle(self, button, clicked=False):
+        if not self.split:
+            return
+        tab = self._tab_for(button)
+        showing = self.split.get_show_sidebar() and self.inspector.stack.get_visible_child_name() == tab
+        if clicked:
+            showing = not button.get_active()
+        if showing:
+            self.split.set_show_sidebar(False)
+        else:
+            self.show_inspector(tab)
+
+    def show_inspector(self, tab=None):
+        """Open the sidebar, on tab if given ('text', 'document', 'cell', 'sheet', 'comments')."""
+        if tab:
+            self.inspector.stack.set_visible_child_name(tab)
+        self.split.set_show_sidebar(True)
+        self._sync_sidebar_toggles()
+
+    def _on_sidebar_shown(self, split, _pspec):
+        shown = split.get_show_sidebar()
+        if shown:
+            self.inspector.refresh()
+        save_state(inspector=shown)
+        self._sync_sidebar_toggles()
+
+    def _sync_sidebar_toggles(self):
+        if not self.split:
+            return
+        shown = self.split.get_show_sidebar()
+        tab = self.inspector.stack.get_visible_child_name()
+        self._toggling = True
+        self.format_button.set_active(shown and tab == self._tab_for(self.format_button))
+        self.document_button.set_active(shown and tab == self._tab_for(self.document_button)
+                                        and self.document_button.get_visible())
+        self._toggling = False
+
+    def _on_show_format_bar(self, action, value):
+        action.set_state(value)
+        save_state(format_bar=value.get_boolean())
+        if self.format_bar:
+            self.format_bar.set_reveal_child(value.get_boolean())
 
     @staticmethod
     def _group(*buttons):
@@ -331,7 +425,6 @@ class DocumentWindow(Adw.ApplicationWindow):
             bar.append(fmt.group(
                 fmt.toggle("view-list-bullet-symbolic", tooltip="Bulleted list", command=".uno:DefaultBullet"),
                 fmt.toggle("view-list-ordered-symbolic", tooltip="Numbered list", command=".uno:DefaultNumbering")))
-            bar.append(self._image_button())
         elif self.kind == "spreadsheet":
             bar.append(fmt.group(
                 fmt.toggle(label="$", tooltip="Currency", command=".uno:NumberFormatCurrency"),
@@ -443,7 +536,7 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     def _image_button(self):
         b = self._button("insert-image-symbolic", tooltip="Insert image…")
-        b.connect("clicked", lambda *_: self._insert_image())
+        b.connect("clicked", lambda *_: self.insert_image())
         return b
 
     def _build_formula_bar(self):
@@ -539,7 +632,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         self._refresh_parts()
         return False
 
-    def _insert_image(self):
+    def insert_image(self):
         dialog = Gtk.FileDialog(title="Insert Image")
         f = Gtk.FileFilter(name="Images")
         f.add_mime_type("image/*")
@@ -589,8 +682,10 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     def _update_title(self):
         name = self._display_name()
-        self.title.set_title(("• " if self.modified else "") + name)
-        if self.imported_from:
+        self.title.set_title(name)
+        if self.modified:
+            self.title.set_subtitle("Edited")       # as a Mac shows an unsaved document
+        elif self.imported_from:
             self.title.set_subtitle(f"Imported from {self.imported_from}")
         elif self.path:
             self.title.set_subtitle(os.path.dirname(self.path).replace(os.path.expanduser("~"), "~"))
@@ -608,7 +703,7 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     def _set_doc_actions(self, enabled):
         for name in ("save", "save-as", "export-pdf", "zoom-in", "zoom-out", "zoom-reset", "find",
-                     "cut", "copy", "paste", "select-all", "format-panel"):
+                     "cut", "copy", "paste", "select-all", "format-panel", "show-format-bar"):
             self.lookup_action(name).set_enabled(enabled)
 
     # --- saving -------------------------------------------------------------------

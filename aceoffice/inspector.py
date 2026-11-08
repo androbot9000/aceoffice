@@ -14,6 +14,7 @@ import os
 
 from gi.repository import GLib, Gtk, Pango
 
+from .comments import Comments
 from .lok import uno_args
 from .widgets import FILL_COLORS, TEXT_COLORS, ColorButton, Units, color_value
 
@@ -249,6 +250,8 @@ class Inspector(Gtk.Box):
         else:
             self._add("text", "Text", self._text_page())
             self.page_setup = None
+        self.comments = Comments(win)
+        self._add("comments", "Comments", self.comments)
 
         self.stack.connect("notify::visible-child-name", self._on_tab)
 
@@ -264,8 +267,11 @@ class Inspector(Gtk.Box):
         return box
 
     def _on_tab(self, *_):
-        if self.page_setup and self.stack.get_visible_child_name() in ("document", "sheet"):
+        tab = self.stack.get_visible_child_name()
+        if self.page_setup and tab in ("document", "sheet"):
             self.page_setup.refresh()
+        elif tab == "comments":
+            self.comments.refresh()
 
     def refresh(self):
         self._on_tab()

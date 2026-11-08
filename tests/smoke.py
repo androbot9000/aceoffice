@@ -154,6 +154,35 @@ def iter_widgets(w):
         child = child.get_next_sibling()
 
 
+def step_tools(win):
+    """The labelled toolbar: a table, a shape and a comment, then the Comments tab."""
+    check("toolbar items are in the title bar", len(win.tools.buttons) >= 6)
+    v = win.view
+    v.press_key(0, 1030)                     # Ctrl+End would need modifiers; End of line is enough
+    v.press_key(13, 1280)
+    win.tools.run(".uno:InsertTable", '{"Columns":{"type":"long","value":3},"Rows":{"type":"long","value":2}}')
+    loop_until(lambda: False, 600)
+    v.press_key(0, 1028)
+    win.tools.run(".uno:BasicShapes.round-rectangle", '{"KeyModifier":{"type":"long","value":8192}}')
+    loop_until(lambda: False, 600)
+    v.press_key(0, 1281)                     # Escape: leave the shape
+    loop_until(lambda: False, 300)
+    win.tools.run(".uno:InsertAnnotation", '{"Text":{"type":"string","value":"Can we say this more simply?"}}')
+    win.show_inspector("comments")
+    loop_until(lambda: win.inspector.comments.list.get_first_child() is not None, 4000)
+    check("the comment shows in the Comments tab", win.inspector.comments.list.get_first_child() is not None)
+    texts = [w.get_label() for w in iter_widgets(win.inspector.comments.list) if isinstance(w, Gtk.Label)]
+    check("with its text and author", "Can we say this more simply?" in texts
+          and any(t and t != "Unknown" and "Author" not in t for t in texts[:1]))
+    check("the Format and Document buttons follow the sidebar",
+          not win.format_button.get_active() and not win.document_button.get_active())
+    loop_until(lambda: False, 400)
+    shot(win, "2f-tools-comments")
+    win.show_inspector("text")
+    check("Format lights up for the Text tab", win.format_button.get_active())
+    v.grab_focus()
+
+
 def step_page_setup(win):
     """Open the Format sidebar's Document tab, read the page, apply the Narrow margins."""
     win.activate_action("win.format-panel")
@@ -196,9 +225,17 @@ def step_text_shot():
     shot(win, "2-document")
     step_find_and_menu(win)
     step_page_setup(win)
+    step_tools(win)
     path = os.path.join(DOCS, "Notes.docx")
     win._write(path)
     check("saved docx", os.path.exists(path) and os.path.getsize(path) > 1000)
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        body = z.read("word/document.xml").decode("utf-8", "replace")
+        names = z.namelist()
+    check("the table was saved", "<w:tbl>" in body)
+    check("the shape was saved", "<wps:wsp" in body or "<v:shape" in body or "<w:drawing>" in body)
+    check("the comment was saved", "word/comments.xml" in names)
     check("modified cleared after save", not win.modified)
     app.new("spreadsheet")
     wait(lambda: editor_win().doc is not None and editor_win().kind == "spreadsheet", step_sheet)

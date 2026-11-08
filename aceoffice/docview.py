@@ -48,6 +48,7 @@ class DocView(Gtk.Widget):
         "edited": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "context-menu": (GObject.SignalFlags.RUN_FIRST, None, (float, float)),
         "search-not-found": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        "comment": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         # Visible area, zoom or row/column sizes changed: spreadsheet headers redraw.
         "geometry-changed": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
@@ -352,6 +353,8 @@ class DocView(Gtk.Widget):
             self.emit("formula-changed", payload)
         elif kind == lok.CALLBACK_CELL_ADDRESS:
             self.emit("cell-address-changed", payload)
+        elif kind == lok.CALLBACK_COMMENT:
+            self.emit("comment", payload)
         elif kind == lok.CALLBACK_INVALIDATE_HEADER:
             self.emit("geometry-changed")
         elif kind == lok.CALLBACK_MOUSE_POINTER:
