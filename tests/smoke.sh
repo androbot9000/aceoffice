@@ -19,7 +19,13 @@ elif [ -z "${ACEOFFICE_LO_PATH:-}" ] && [ ! -e /usr/lib/libreoffice/program/libm
 fi
 
 FAKE_HOME="$(mktemp -d)"
-trap 'rm -rf "$FAKE_HOME"' EXIT
+# A private runtime folder too: the test session starts its own portals, and one sharing
+# /run/user/UID would mount over (and, on exit, unmount) your desktop's document portal,
+# after which no Flatpak app starts until you log in again.
+RUN_DIR="$(mktemp -d)"
+chmod 700 "$RUN_DIR"
+trap 'fusermount3 -u "$RUN_DIR/doc" 2>/dev/null; rm -rf "$FAKE_HOME" "$RUN_DIR"' EXIT
+export XDG_RUNTIME_DIR="$RUN_DIR"
 mkdir -p "$FAKE_HOME/Documents" "$FAKE_HOME/.config"
 # SMOKE_THEME=1: render with your own GTK 4 theme (e.g. WhiteSur in ~/.config/gtk-4.0).
 if [ -n "${SMOKE_THEME:-}" ] && [ -d "$HOME/.config/gtk-4.0" ]; then
