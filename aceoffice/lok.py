@@ -525,6 +525,11 @@ class Document:
         self._c.postUnoCommand(self._d, command.encode(),
                                args.encode() if args else None, notify)
 
+    def graphic_selection(self, kind, x, y):
+        """Drag a handle of the selected image or shape: kind 0 starts at a handle's
+        position (twips), kind 1 ends the drag at the new position."""
+        self._c.setGraphicSelection(self._d, kind, x, y)
+
     def selected_text(self, mime="text/plain;charset=utf-8"):
         used = c_char_p()
         return _take_string(self._c.getTextSelection(self._d, mime.encode(), ctypes.byref(used)))

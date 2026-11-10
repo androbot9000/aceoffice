@@ -224,6 +224,31 @@ def step_tools(win):
     v.grab_focus()
 
 
+def step_arrange(win):
+    """Insert a rectangle, resize it by its corner handle, colour it from the Arrange tab."""
+    v = win.view
+    win.tools.run(".uno:BasicShapes.rectangle", __import__("aceoffice.tools").tools.INSERT_HERE)
+    loop_until(lambda: v._graphic, 3000)
+    check(f"selecting a shape opens the Arrange tab ({win.inspector.stack.get_visible_child_name()})",
+          bool(v._graphic) and win.inspector.stack.get_visible_child_name() == "arrange")
+    before = v._graphic
+    name, hx, hy = [h for h in v._handles() if h[0] == "se"][0]
+    check("the shape has resize handles", v._handle_at(hx + 2, hy - 2) is not None and len(v._handles()) == 8)
+    v.doc.graphic_selection(0, *v.to_twips(hx, hy))
+    v.doc.graphic_selection(1, *v.to_twips(hx + 60, hy + 40))
+    loop_until(lambda: v._graphic and v._graphic[2] != before[2], 3000)
+    after = v._graphic
+    check(f"dragging a corner handle resizes it ({before[2]}x{before[3]} to {after[2]}x{after[3]} twips)",
+          after[2] > before[2] and after[3] > before[3])
+    win.inspector._shape_color("Fill", "#ff7800")
+    loop_until(lambda: False, 500)
+    shot(win, "2g-arrange")
+    v.press_key(0, 1281)          # Escape: back to the text
+    loop_until(lambda: not v._graphic, 2000)
+    check(f"and the sidebar returns to Text afterwards ({win.inspector.stack.get_visible_child_name()})",
+          win.inspector.stack.get_visible_child_name() == "text")
+
+
 def step_page_setup(win):
     """Open the Format sidebar's Document tab, read the page, apply the Narrow margins."""
     win.activate_action("win.format-panel")
@@ -269,6 +294,7 @@ def step_text_shot():
     step_find_and_menu(win)
     step_page_setup(win)
     step_tools(win)
+    step_arrange(win)
     path = os.path.join(DOCS, "Notes.docx")
     win._write(path)
     check("saved docx", os.path.exists(path) and os.path.getsize(path) > 1000)

@@ -406,6 +406,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         main.append(self._build_status_bar())
 
         self.inspector = Inspector(self, self.fmt)
+        self.view.connect("object-selected", lambda _v, on: self.inspector.object_selected(on))
         self.view.connect("comment", lambda _v, p: self.inspector.comments and self.inspector.comments.changed(p))
         split = self.split = Adw.OverlaySplitView(
             content=main, sidebar=self.inspector, sidebar_position=Gtk.PackType.END, show_sidebar=False,

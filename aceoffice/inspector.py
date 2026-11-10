@@ -251,6 +251,7 @@ class Inspector(Gtk.Box):
             self._add("text", "Text", self._text_page())
             self._add("slide", "Slide", self._slide_page())
             self.page_setup = None
+        self._add("arrange", "Arrange", self._arrange_page())
         self.comments = Comments(win)
         self._add("comments", "Comments", self.comments)
 
@@ -276,6 +277,70 @@ class Inspector(Gtk.Box):
 
     def refresh(self):
         self._on_tab()
+
+    def _arrange_page(self):
+        """For the selected image, shape or text box: colours, order, alignment and text wrap."""
+        fmt, kind = self.fmt, self.win.kind
+        hint = Gtk.Label(label="Select an image, shape or text box to arrange it.", wrap=True, xalign=0,
+                         css_classes=["dim-label", "caption"], margin_bottom=12)
+        style = _section("Shape Style")
+        fill = ColorButton("■", "Fill color", "#729fcf", FILL_COLORS)
+        fill.connect("color-chosen", lambda _b, c: self._shape_color("Fill", c))
+        line = ColorButton("□", "Border color", "#3465a4", TEXT_COLORS)
+        line.connect("color-chosen", lambda _b, c: self._shape_color("XLine", c))
+        style.append(_row("Fill", fill))
+        style.append(_row("Border", line))
+
+        forward, back = ((".uno:Forward", ".uno:Backward") if kind == "presentation"
+                         else (".uno:ObjectForwardOne", ".uno:ObjectBackOne"))
+        order = _section("Order")
+        grid = Gtk.Grid(row_spacing=6, column_spacing=6, column_homogeneous=True)
+        for i, (label, command) in enumerate([("Front", ".uno:BringToFront"), ("Back", ".uno:SendToBack"),
+                                              ("Forward", forward), ("Backward", back)]):
+            grid.attach(fmt.button(label=label, tooltip=f"Move {label.lower()}", command=command), i % 2, i // 2, 1, 1)
+        order.append(grid)
+
+        align = _section("Align")
+        align.append(_row("Across", fmt.group(
+            fmt.button("format-justify-left-symbolic", tooltip="Align left edges", command=".uno:ObjectAlignLeft"),
+            fmt.button("format-justify-center-symbolic", tooltip="Center across", command=".uno:AlignCenter"),
+            fmt.button("format-justify-right-symbolic", tooltip="Align right edges", command=".uno:ObjectAlignRight"))))
+        align.append(_row("Down", fmt.group(
+            fmt.button("go-top-symbolic", tooltip="Align tops", command=".uno:AlignUp"),
+            fmt.button("format-justify-fill-symbolic", tooltip="Center down", command=".uno:AlignMiddle"),
+            fmt.button("go-bottom-symbolic", tooltip="Align bottoms", command=".uno:AlignDown"))))
+        align.append(_row("Flip", fmt.group(
+            fmt.button("object-flip-horizontal-symbolic", tooltip="Flip left to right", command=".uno:FlipHorizontal"),
+            fmt.button("object-flip-vertical-symbolic", tooltip="Flip top to bottom", command=".uno:FlipVertical"))))
+        sections = [hint, style, order, align]
+        if kind == "text":
+            wrap = _section("Text Wrap")
+            grid = Gtk.Grid(row_spacing=6, column_spacing=6, column_homogeneous=True)
+            for i, (label, command, tip) in enumerate([
+                    ("None", ".uno:WrapOff", "Text stays above and below"),
+                    ("Around", ".uno:WrapOn", "Text flows around both sides"),
+                    ("Automatic", ".uno:WrapIdeal", "Text flows around the wider side"),
+                    ("In Front of Text", ".uno:WrapThrough", "The object sits over the text")]):
+                grid.attach(fmt.button(label=label, tooltip=tip, command=command), i % 2, i // 2, 1, 1)
+            wrap.append(grid)
+            sections.append(wrap)
+        return self._wrap(*sections)
+
+    def _shape_color(self, what, color):
+        """what is 'Fill' or 'XLine'; '' means none (style 0), a colour means solid (style 1)."""
+        self.fmt.send(f".uno:{what}Style", uno_args(**{f"{what}Style": 1 if color else 0}))
+        if color:
+            self.fmt.send(f".uno:{what}Color", uno_args(**{f"{what}Color": color_value(color)}))
+
+    def object_selected(self, selected):
+        """Follow the selection as Pages does: Arrange when an object is picked, back after."""
+        tab = self.stack.get_visible_child_name()
+        if selected and tab in ("text", "cell"):
+            self._before_arrange = tab
+            self.stack.set_visible_child_name("arrange")
+        elif not selected and tab == "arrange" and getattr(self, "_before_arrange", None):
+            self.stack.set_visible_child_name(self._before_arrange)
+            self._before_arrange = None
 
     def _slide_page(self):
         """Layout and slide commands for the current slide, as in Keynote's Slide Layout tab."""

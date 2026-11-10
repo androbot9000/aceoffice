@@ -20,6 +20,9 @@ from . import keys, lok
 TILE = 256                       # logical pixels per tile edge
 TWIPS_PER_PX = lok.TWIPS_PER_INCH / 96
 TILES_PER_PASS = 8               # render this many tiles per idle pass, then repaint
+HANDLE = 9                       # logical pixels: resize handles on a selected image or shape
+_HANDLE_CURSORS = {"nw": "nw-resize", "n": "n-resize", "ne": "ne-resize", "e": "e-resize",
+                   "se": "se-resize", "s": "s-resize", "sw": "sw-resize", "w": "w-resize"}
 
 # Keys that move around the document without changing it.
 _NAV_KEYS = {1024, 1025, 1026, 1027, 1028, 1029, 1030, 1031, 1281}
@@ -51,6 +54,8 @@ class DocView(Gtk.Widget):
         "context-menu": (GObject.SignalFlags.RUN_FIRST, None, (float, float, str)),
         "search-not-found": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "comment": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
+        # An image, shape or chart became selected (True) or nothing is any more (False).
+        "object-selected": (GObject.SignalFlags.RUN_FIRST, None, (bool,)),
         # LibreOffice redrew part of a sheet or slide (-1: the current one); slide thumbnails follow.
         "tiles-invalidated": (GObject.SignalFlags.RUN_FIRST, None, (int,)),
         # Visible area, zoom or row/column sizes changed: spreadsheet headers redraw.
@@ -76,6 +81,8 @@ class DocView(Gtk.Widget):
         self._buttons = 0
         self._hadj = self._vadj = None
         self._menu_at = None
+        self._resize = None      # a handle being dragged: {"handle", "now"}
+        self._over_handle = False
         # Slides sit in the middle of the window, with a shadow, as in Keynote.
         self.center = False
         # Keep the page fitted to the window as it resizes, until the user zooms.
@@ -321,10 +328,26 @@ class DocView(Gtk.Widget):
         for r in (self._cell_cursor, self._graphic):
             if r:
                 rr = self._px_rect(r, ox, oy)
-                width = [2.0] * 4
+                width = [2.0 if r is self._cell_cursor else 1.0] * 4
                 outline = Gsk.RoundedRect()
                 outline.init_from_rect(rr, 0)
                 snapshot.append_border(outline, width, [accent] * 4)
+        if self._graphic:
+            # Eight handles to resize the selected image or shape, as on a Mac: white squares
+            # with an accent edge. While one is dragged, an outline shows the new size.
+            for _name, hx, hy in self._handles():
+                knob = Gsk.RoundedRect()
+                knob.init_from_rect(Graphene.Rect().init(hx - HANDLE / 2, hy - HANDLE / 2, HANDLE, HANDLE), 2)
+                snapshot.push_rounded_clip(knob)
+                snapshot.append_color(_WHITE, knob.bounds)
+                snapshot.pop()
+                snapshot.append_border(knob, [1.0] * 4, [accent] * 4)
+            if self._resize and self._resize.get("now"):
+                ghost = Gsk.RoundedRect()
+                ghost.init_from_rect(self._px_rect(self._resize["now"], ox, oy), 0)
+                faint = accent.copy()
+                faint.alpha = 0.6
+                snapshot.append_border(ghost, [1.0] * 4, [faint] * 4)
         if (self._cursor and self._cursor_visible and self._blink_on and self.has_focus()
                 and not self._selection):
             x, y, w, h = self._cursor
@@ -385,7 +408,10 @@ class DocView(Gtk.Widget):
         elif kind == lok.CALLBACK_SEARCH_NOT_FOUND:
             self.emit("search-not-found")
         elif kind == lok.CALLBACK_GRAPHIC_SELECTION:
+            had = self._graphic is not None
             self._graphic = _rect(payload)
+            if had != (self._graphic is not None):
+                self.emit("object-selected", self._graphic is not None)
             self.queue_draw()
         elif kind == lok.CALLBACK_CELL_CURSOR:
             self._cell_cursor = _rect(payload)
@@ -575,10 +601,48 @@ class DocView(Gtk.Widget):
         button = {1: lok.MOUSE_LEFT, 2: lok.MOUSE_MIDDLE}.get(gesture.get_current_button())
         if not button:
             return
+        handle = self._handle_at(x, y) if button == lok.MOUSE_LEFT else None
+        if handle:
+            name, hx, hy = handle
+            self._resize = {"handle": name, "now": None}
+            self.doc.graphic_selection(0, *self.to_twips(hx, hy))
+            return
         self._buttons = button
         tx, ty = self.to_twips(x, y)
         mods = keys.modifiers(gesture.get_current_event_state())
         self.doc.mouse(lok.MOUSEEVENT_DOWN, tx, ty, n_press, button, mods)
+
+    # --- resize handles -------------------------------------------------------------------
+
+    def _handles(self):
+        """(name, x, y) in widget pixels for the selected object's eight handles."""
+        if not self._graphic:
+            return []
+        r = self._px_rect(self._graphic, self._offset_x(), self._offset_y())
+        x0, y0, x1, y1 = r.get_x(), r.get_y(), r.get_x() + r.get_width(), r.get_y() + r.get_height()
+        xm, ym = (x0 + x1) / 2, (y0 + y1) / 2
+        return [("nw", x0, y0), ("n", xm, y0), ("ne", x1, y0), ("e", x1, ym),
+                ("se", x1, y1), ("s", xm, y1), ("sw", x0, y1), ("w", x0, ym)]
+
+    def _handle_at(self, x, y):
+        for name, hx, hy in self._handles():
+            if abs(x - hx) <= HANDLE and abs(y - hy) <= HANDLE:
+                return name, hx, hy
+        return None
+
+    def _resized_rect(self, handle, tx, ty):
+        """The selection's rectangle (twips) if handle were dropped at tx, ty."""
+        x, y, w, h = self._graphic
+        x1, y1 = x + w, y + h
+        if "w" in handle:
+            x = min(tx, x1 - 1)
+        if "e" in handle:
+            x1 = max(tx, x + 1)
+        if "n" in handle:
+            y = min(ty, y1 - 1)
+        if "s" in handle:
+            y1 = max(ty, y + 1)
+        return x, y, x1 - x, y1 - y
 
     def context_click(self, x, y):
         tx, ty = self.to_twips(x, y)
@@ -595,6 +659,12 @@ class DocView(Gtk.Widget):
         return False
 
     def _on_released(self, gesture, n_press, x, y):
+        if self._resize:
+            self.doc.graphic_selection(1, *self.to_twips(x, y))
+            self._resize = None
+            self.emit("edited")
+            self.queue_draw()
+            return
         if not self._buttons:
             return
         tx, ty = self.to_twips(x, y)
@@ -603,6 +673,18 @@ class DocView(Gtk.Widget):
         self._buttons = 0
 
     def _on_motion(self, ctl, x, y):
+        if self._resize and self._graphic:
+            self._resize["now"] = self._resized_rect(self._resize["handle"], *self.to_twips(x, y))
+            self.queue_draw()
+            return
+        if self._graphic and not self._buttons:
+            handle = self._handle_at(x, y)
+            if handle:
+                self.set_cursor_from_name(_HANDLE_CURSORS[handle[0]])
+                self._over_handle = True
+            elif self._over_handle:
+                self._over_handle = False
+                self.set_cursor_from_name("default")
         if self._buttons:
             tx, ty = self.to_twips(x, y)
             self.doc.mouse(lok.MOUSEEVENT_MOVE, tx, ty, 1, self._buttons,
