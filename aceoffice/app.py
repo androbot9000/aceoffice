@@ -96,6 +96,8 @@ SHORTCUTS = [
     ("Editing", [("Undo", "<Ctrl>z"), ("Redo", "<Ctrl><Shift>z"), ("Cut", "<Ctrl>x"), ("Copy", "<Ctrl>c"),
                  ("Paste", "<Ctrl>v"), ("Select all", "<Ctrl>a"), ("Find", "<Ctrl>f")]),
     ("Formatting", [("Bold", "<Ctrl>b"), ("Italic", "<Ctrl>i"), ("Underline", "<Ctrl>u")]),
+    ("Presentations", [("Play from this slide", "<Ctrl><Alt>p"), ("Play from the beginning", "F5"),
+                       ("New slide", "<Ctrl><Shift>n"), ("Duplicate slide", "<Ctrl>d")]),
     ("View", [("Zoom in", "<Ctrl>plus"), ("Zoom out", "<Ctrl>minus"), ("Actual size", "<Ctrl>0"),
               ("Keyboard shortcuts", "<Ctrl>question")]),
 ]
@@ -134,6 +136,7 @@ class AceOfficeApp(Adw.Application):
             ("new-spreadsheet", lambda: self.new("spreadsheet"), []),
             ("new-presentation", lambda: self.new("presentation"), []),
             ("open", self.open_dialog, ["<Ctrl>o"]),
+            ("convert-iwork", self.convert_iwork_dialog, []),
             ("about", self.about, []),
             ("shortcuts", self.shortcuts, ["<Ctrl>question"]),
             ("quit", self.quit_all, ["<Ctrl>q"]),
@@ -203,6 +206,64 @@ class AceOfficeApp(Adw.Application):
                 self.restore(entries)
         dialog.connect("response", response)
         dialog.present(win)
+
+    # --- converting a folder of iWork files ------------------------------------------
+
+    def convert_iwork_dialog(self):
+        win = self.get_active_window()
+        dialog = Gtk.FileDialog(title="Choose a Folder of Pages, Numbers and Keynote Files")
+
+        def done(d, res):
+            try:
+                folder = d.select_folder_finish(res).get_path()
+            except GLib.Error:
+                return
+            self._with_office(win, lambda: self.convert_iwork(folder, win))
+        dialog.select_folder(win, None, done)
+
+    def convert_iwork(self, folder, win=None, done=None):
+        """Write a Word, Excel or PowerPoint copy beside every .pages, .numbers and .key file
+        in folder and its subfolders. Originals are left alone; existing copies are kept."""
+        from .window import private_copy
+        targets = {".pages": "docx", ".numbers": "xlsx", ".key": "pptx"}
+        toast = lambda text: win and GLib.idle_add(                       # noqa: E731
+            lambda: win.toasts.add_toast(Adw.Toast(title=text, timeout=6)) and False)
+        toast("Converting…")
+
+        def work():
+            converted, skipped, failed = [], 0, []
+            for root, _dirs, names in os.walk(folder):
+                for name in sorted(names):
+                    stem, ext = os.path.splitext(name)
+                    if ext.lower() not in targets or name.startswith("."):
+                        continue
+                    out = os.path.join(root, f"{stem}.{targets[ext.lower()]}")
+                    if os.path.exists(out):
+                        skipped += 1
+                        continue
+                    copy = None
+                    try:
+                        copy = private_copy(os.path.join(root, name))
+                        doc = self.office.load(copy)
+                        try:
+                            doc.export(out, targets[ext.lower()])
+                        finally:
+                            doc.destroy()
+                        converted.append(out)
+                    except Exception:  # noqa: BLE001 - reported in the summary
+                        failed.append(name)
+                    finally:
+                        if copy and os.path.exists(copy):
+                            os.unlink(copy)
+            parts = [f"Converted {len(converted)} file{'s' if len(converted) != 1 else ''}"]
+            if skipped:
+                parts.append(f"{skipped} already had a copy")
+            if failed:
+                parts.append(f"couldn't read {', '.join(failed[:3])}{'…' if len(failed) > 3 else ''}")
+            toast("; ".join(parts) + ".")
+            if done:
+                GLib.idle_add(done, converted, failed)
+        threading.Thread(target=work, daemon=True).start()
 
     def restore(self, entries):
         for entry in entries:

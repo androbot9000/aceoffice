@@ -31,6 +31,9 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="1.0.0" date="2026-11-09">
+      <description><p>Printing, Share by Email, spelling suggestions, presenter notes and display, resize handles and an Arrange tab, column resizing, recovery of unsaved work, and an iWork folder converter.</p></description>
+    </release>
     <release version="0.2.0" date="2026-11-08">
       <description><p>Presentations: slide navigator, layouts, themes and Play. Ships LibreOffice 26.2.7.</p></description>
     </release>

@@ -151,6 +151,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         file_section.append("New Spreadsheet", "app.new-spreadsheet")
         file_section.append("New Presentation", "app.new-presentation")
         file_section.append("Open…", "app.open")
+        file_section.append("Convert iWork Files…", "app.convert-iwork")
         main_menu.append_section(None, file_section)
         file_section = Gio.Menu()
         file_section.append("Save As…", "win.save-as")
