@@ -462,6 +462,38 @@ def step_slides():
 def step_reopen():
     win = editor_win()
     check("reopened saved docx", win.kind == "text")
+    # Unsaved edits are kept in a recovery copy; pretend AceOffice died, and restore it.
+    from aceoffice import recovery
+    win.view.grab_focus()
+    win.view.type_text("UNSAVED-EDIT ")
+    loop_until(lambda: win.modified, 2000)
+    win.keeper.write()
+    with open(win.keeper.stem + ".json") as f:
+        entry = __import__("json").load(f)
+    entry["pid"], entry["json"] = 0, win.keeper.stem + ".json"
+    __import__("json").dump(entry, open(entry["json"], "w"))
+    win.keeper.stem += "-gone"             # so closing this window leaves the copy, as a crash would
+    win.modified = False
+    win.close()
+    found = recovery.pending()
+    check(f"unsaved edits are kept in a recovery copy ({[e['name'] for e in found]})",
+          [e["name"] for e in found] == ["Notes.docx"])
+    app.restore(found)
+    wait(lambda: editor_win().doc is not None and editor_win() is not win, step_restored)
+
+
+def step_restored():
+    win = editor_win()
+    win.doc.uno(".uno:SelectAll")
+    loop_until(lambda: "UNSAVED-EDIT" in (win.doc.selected_text() or ""), 3000)
+    from aceoffice import recovery
+    check(f"restoring brings them back, still unsaved, under the same name ({win._display_name()})",
+          "UNSAVED-EDIT" in (win.doc.selected_text() or "") and win.modified
+          and win._display_name() == "Notes.docx" and win.path.endswith("Notes.docx"))
+    win.view.press_key(0, 1028)
+    win._write(win.path)
+    check("and saving clears the recovery copy", not recovery.pending()
+          and not os.path.exists(win.keeper.stem + ".json"))
     shot(win, "5-reopened")
     try:
         app.shortcuts()

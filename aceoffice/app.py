@@ -13,7 +13,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from . import __version__, lok  # noqa: E402
+from . import __version__, lok, recovery  # noqa: E402
 from .widgets import swatch_css  # noqa: E402
 from .manager import blank_template  # noqa: E402
 from .window import OPEN_PATTERNS, DocumentWindow  # noqa: E402
@@ -175,7 +175,39 @@ class AceOfficeApp(Adw.Application):
         waiting, self._waiting = self._waiting, []
         for fn in waiting:
             fn()
+        if office:
+            self._offer_recovery()
         return False
+
+    def _offer_recovery(self):
+        """Unsaved documents from a session that ended unexpectedly: offer them back."""
+        entries = recovery.pending()
+        win = self.get_active_window()
+        if not entries or not win:
+            return
+        names = "\n".join("• " + e["name"] for e in entries[:8])
+        dialog = Adw.AlertDialog(
+            heading="Restore unsaved documents?" if len(entries) > 1 else "Restore your unsaved document?",
+            body=f"AceOffice didn't close properly last time. It kept a copy of:\n\n{names}")
+        dialog.add_response("discard", "Discard")
+        dialog.add_response("restore", "Restore")
+        dialog.set_response_appearance("discard", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_response_appearance("restore", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("restore")
+        dialog.set_close_response("restore")      # Esc must never throw work away
+
+        def response(_d, r):
+            if r == "discard":
+                recovery.discard(entries)
+            else:
+                self.restore(entries)
+        dialog.connect("response", response)
+        dialog.present(win)
+
+    def restore(self, entries):
+        for entry in entries:
+            win = self._target_window()
+            win.load(self.office, recovered=entry)
 
     def _with_office(self, win, fn):
         """Run fn() once LibreOffice is ready, or show why it can't start."""

@@ -11,7 +11,7 @@ import threading
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
 
-from . import lok
+from . import lok, recovery
 from .docview import DocView
 from .headers import SheetHeaders
 from .inspector import Formatting, Inspector
@@ -275,7 +275,7 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     # --- loading ------------------------------------------------------------------
 
-    def load(self, office, path=None, kind=None, template=None, title=None):
+    def load(self, office, path=None, kind=None, template=None, title=None, recovered=None):
         """Open path, or start a new document from a template file (or LibreOffice's blank
         document of kind). Runs the load off the UI thread."""
         name = os.path.basename(path) if path else f"new {(title or kind or 'document').lower()}"
@@ -283,6 +283,12 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.stack.set_visible_child_name("loading")
         self.back_button.set_visible(False)
         self.template_title = title if template else None
+        # recovered: an entry from recovery.pending(): open its copy, as the document it was.
+        self._recovered = recovered
+        if recovered:
+            template, path = recovered["file"], None
+            name = recovered["name"]
+            self.loading.set_title(f"Restoring {name}…")
 
         def work():
             try:
@@ -297,7 +303,7 @@ class DocumentWindow(Adw.ApplicationWindow):
                         "The LibreOffice AceOffice found can't draw slides (Ubuntu's own LibreOffice "
                         "has this bug). The AceOffice Flatpak includes one that can; from a source "
                         "checkout, run tools/dev-runtime.sh. See github.com/androbot9000/aceoffice/issues/1.")
-                GLib.idle_add(self._loaded, doc, path)
+                GLib.idle_add(self._loaded, doc, (recovered or {}).get("original") if recovered else path)
             except Exception as e:  # noqa: BLE001 - shown to the user
                 GLib.idle_add(self.show_error, f"Couldn't open {name}", str(e))
         threading.Thread(target=work, daemon=True).start()
@@ -313,8 +319,9 @@ class DocumentWindow(Adw.ApplicationWindow):
             # Nothing to write back to; the first save asks where to put the converted copy.
             self.path = None
             self._import_stem = os.path.splitext(path)[0]
-        if path:
+        if path and not self._recovered:
             Gtk.RecentManager.get_default().add_item(Gio.File.new_for_path(path).get_uri())
+        self.keeper = recovery.Keeper(self)
 
         self.view = DocView(doc)
         self.view.connect("state-changed", self._on_state_changed)
@@ -349,7 +356,17 @@ class DocumentWindow(Adw.ApplicationWindow):
             self._update_slide_status()
             self.notes.reload()
         self.view.grab_focus()
-        if self.imported_from:
+        if self._recovered:
+            # Unsaved until you say so: Save writes over the original, as it would have.
+            entry, self._recovered = self._recovered, None
+            if not self.path and entry["name"].startswith("Untitled "):
+                self.template_title = entry["name"][len("Untitled "):]
+            self._set_modified(True)
+            self.keeper.touched()
+            recovery.discard([entry])
+            self.keeper.write()
+            self.toasts.add_toast(Adw.Toast(title=f"Restored {entry['name']} with your unsaved changes", timeout=5))
+        elif self.imported_from:
             self.toasts.add_toast(Adw.Toast(title=f"Imported from {self.imported_from}. "
                                                   f"Saving will create a {DEFAULT_EXT[self.kind]} copy.",
                                             timeout=6))
@@ -863,6 +880,11 @@ class DocumentWindow(Adw.ApplicationWindow):
         self._set_modified(value)
 
     def _set_modified(self, value):
+        keeper = getattr(self, "keeper", None)
+        if keeper and value:
+            keeper.touched()
+        elif keeper:
+            keeper.clear()
         if value != self.modified:
             self.modified = value
             self._update_title()
@@ -1019,6 +1041,9 @@ class DocumentWindow(Adw.ApplicationWindow):
         return True
 
     def _dispose_doc(self):
+        if getattr(self, "keeper", None):
+            self.keeper.stop()
+            self.keeper = None
         if self.doc:
             self.doc.destroy()
             self.doc = None
