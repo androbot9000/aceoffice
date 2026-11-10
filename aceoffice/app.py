@@ -78,6 +78,12 @@ list.ace-slide-list { background: transparent; padding: 6px 0; }
 .ace-slide-list > row:selected label { color: @accent_color; opacity: 1; font-weight: 700; }
 window.ace-presenter, window.ace-presenter stack { background: black; }
 .ace-presenter-end { color: alpha(white, 0.6); }
+.ace-notes { border-top: 1px solid alpha(currentColor, 0.12); }
+.ace-notes textview, .ace-notes textview text { background: transparent; }
+window.ace-console { background: #1c1c1e; color: white; }
+.ace-console-caption { font-size: 11pt; font-weight: 700; opacity: 0.6; }
+.ace-console-notes { font-size: 17pt; }
+.ace-console-clock { font-size: 26pt; font-weight: 300; }
 .ace-layout-button { padding: 6px 4px; }
 .ace-swatch-none { background: linear-gradient(to top right, transparent 46%, #c01c28 48%, #c01c28 52%, transparent 54%); }
 """

@@ -373,20 +373,33 @@ def step_slides():
     loop_until(lambda: len(nav.pictures) == 3, 5000)
     check(f"duplicate and delete ({win.doc.parts()} slides, navigator {len(nav.pictures)})",
           win.doc.parts() == 3 and len(nav.pictures) == 3)
+    # Drag slide 3 (Agenda) up to second place, as the navigator does on a drop.
+    win.move_slide(2, 1)
+    loop_until(lambda: win.doc.part_name(1) == "Agenda", 5000)
+    check(f"dragging a slide moves it ({[win.doc.part_name(i) for i in range(3)]})",
+          win.doc.part_name(1) == "Agenda")
+    loop_until(lambda: False, 600)
     win.select_slide(0)
+    win.notes_button.set_active(True)
+    loop_until(lambda: len(win.notes.texts) == 3, 3000)
+    win.notes.view.get_buffer().set_text("Welcome everyone.\nMention the café.")
     loop_until(lambda: False, 1200)
     shot(win, "7-presentation")
     win.show_inspector("slide")
     loop_until(lambda: False, 600)
     shot(win, "7b-presentation-slide-tab")
-    win.play(0)
-    show = next((w for w in Gtk.Window.list_toplevels() if w.__class__.__name__ == "Presenter"), None)
+    from aceoffice.slides import Presenter
+    show = Presenter(win, 0, console=True)        # as with a projector attached
     loop_until(lambda: show is not None and show.pictures[show._front].get_paintable() is not None, 5000)
     check("Play opens the slideshow on the first slide",
           show is not None and show.index == 0 and show.pictures[show._front].get_paintable() is not None)
     loop_until(lambda: False, 800)
     if show:
         shot(show, "7c-play")
+        shot(show.console, "7d-presenter-display")
+        check(f"the presenter display shows this slide's notes ({show.console.notes.get_label()[:17]!r})",
+              show.console.notes.get_label().startswith("Welcome everyone.")
+              and show.console.next.get_paintable() is not None)
         show.go(1)
         loop_until(lambda: False, 600)
         check("and moves to the next slide", show.index == 1)
@@ -399,6 +412,10 @@ def step_slides():
         first = z.read("ppt/slides/slide1.xml").decode("utf-8", "replace")
     check(f"saved pptx with 3 slides ({len(slides)})", len(slides) == 3)
     check("with the new title", "Leaving iCloud behind" in first)
+    with zipfile.ZipFile(path) as z:
+        notes = "".join(z.read(n).decode("utf-8", "replace") for n in z.namelist()
+                        if n.startswith("ppt/notesSlides/") and n.endswith(".xml"))
+    check("and the presenter notes", "Mention the café." in notes)
     win.modified = False
     win.close()
     app.open_path(os.path.join(DOCS, "Notes.docx"))

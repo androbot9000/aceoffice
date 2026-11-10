@@ -16,7 +16,7 @@ from .docview import DocView
 from .headers import SheetHeaders
 from .inspector import Formatting, Inspector
 from .manager import StartPage, TemplateChooser
-from .slides import Presenter, SlideNavigator
+from .slides import NotesPane, Presenter, SlideNavigator
 from .tools import Tools, tool_button
 from .lok import uno_args
 
@@ -320,6 +320,7 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.view.connect("state-changed", self._on_state_changed)
         self.view.connect("part-changed", lambda _v, n: self._select_part(n))
         self.slides_nav = None
+        self.notes = None
         self.view.connect("edited", lambda *_: self._set_modified(True))
         self.view.connect("zoom-changed", lambda _v, z: self.zoom_label.set_label(f"{round(z * 100)}%"))
         self.headers = None
@@ -346,6 +347,7 @@ class DocumentWindow(Adw.ApplicationWindow):
             self.view.start_auto_fit()
             self.slides_nav.rebuild()
             self._update_slide_status()
+            self.notes.reload()
         self.view.grab_focus()
         if self.imported_from:
             self.toasts.add_toast(Adw.Toast(title=f"Imported from {self.imported_from}. "
@@ -388,9 +390,15 @@ class DocumentWindow(Adw.ApplicationWindow):
             self.slides_nav = SlideNavigator(self)
             self.slides_nav.connect("slide-activated", lambda _n, i: self.select_slide(i, focus=False))
             self.view.connect("tiles-invalidated", lambda _v, part: self.slides_nav.slide_changed(part))
+            self.notes = NotesPane(self)
+            self.notes_revealer = Gtk.Revealer(child=self.notes, reveal_child=load_state().get("notes", False),
+                                               transition_type=Gtk.RevealerTransitionType.SLIDE_UP)
+            editor = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True)
+            editor.append(self.scrolled)
+            editor.append(self.notes_revealer)
             body = Gtk.Box()
             body.append(self.slides_nav)
-            body.append(self.scrolled)
+            body.append(editor)
             content = body
 
         main = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -597,6 +605,13 @@ class DocumentWindow(Adw.ApplicationWindow):
             self.status_label = Gtk.Label(xalign=0, hexpand=True, css_classes=["dim-label", "caption"],
                                           ellipsize=Pango.EllipsizeMode.END)
             bar.append(self.status_label)
+            if self.kind == "presentation":
+                notes = Gtk.ToggleButton(label="Presenter Notes", css_classes=["flat", "caption"],
+                                         active=load_state().get("notes", False),
+                                         tooltip_text="Show or hide this slide's presenter notes")
+                notes.connect("toggled", lambda b: self.toggle_notes(b.get_active()))
+                self.notes_button = notes
+                bar.append(notes)
             self._page_status = self._word_status = ""
         self.zoom_label = Gtk.Button(label="100%", tooltip_text="Actual size (Ctrl+0)",
                                      css_classes=["flat", "numeric", "caption"], action_name="win.zoom-reset")
@@ -683,7 +698,20 @@ class DocumentWindow(Adw.ApplicationWindow):
         if focus:
             self.view.grab_focus()
 
+    def move_slide(self, source, target):
+        """Move slide source to position target (dragged in the navigator)."""
+        if source == target or not 0 <= target < self.doc.parts():
+            return
+        self._set_part(source)
+        for _ in range(abs(target - source)):
+            self.doc.uno(".uno:MovePageDown" if target > source else ".uno:MovePageUp")
+        self._set_modified(True)
+        self._notes_stale = True
+        GLib.timeout_add(150 + 30 * abs(target - source), self._after_slides_changed)
+
     def _update_slide_status(self):
+        if self.notes and self.doc:
+            self.notes.show_slide(self.doc.part())
         if self.kind == "presentation":
             self.status_label.set_label(f"Slide {self.doc.part() + 1} of {self.doc.parts()}")
 
@@ -711,6 +739,8 @@ class DocumentWindow(Adw.ApplicationWindow):
             return
         command = {"new": ".uno:InsertPage", "duplicate": ".uno:DuplicatePage", "delete": ".uno:DeletePage",
                    "up": ".uno:MovePageUp", "down": ".uno:MovePageDown"}[name]
+        self.notes.commit()
+        self._notes_stale = True
         self.doc.uno(command)
         # LibreOffice runs commands in turn but not at once: the layout goes on the new slide
         # once it exists (and is current).
@@ -733,12 +763,22 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.view.invalidate_all(keep_showing=False)
         self.view.queue_resize()
         self._refresh_parts()
+        if getattr(self, "_notes_stale", False):
+            self._notes_stale = False
+            self.notes.reload()          # the slides' numbers changed
         return False
 
     def play(self, start=None):
         """Show the slides full screen, from start (default: the current slide)."""
         if self.kind == "presentation":
+            self.notes.commit()
             Presenter(self, self.doc.part() if start is None else start)
+
+    def toggle_notes(self, show):
+        self.notes_revealer.set_reveal_child(show)
+        save_state(notes=show)
+        if show:
+            self.notes.view.grab_focus()
 
     def _add_sheet(self):
         n = self.doc.parts()
@@ -841,6 +881,8 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     def _write(self, path, then=None):
         ext = os.path.splitext(path)[1].lstrip(".").lower() or DEFAULT_EXT[self.kind]
+        if self.notes:
+            self.notes.commit(wait=True)
         try:
             # TakeOwnership makes the document adopt the new file and format, like a real Save As,
             # and clears LibreOffice's modified flag.
@@ -907,6 +949,8 @@ class DocumentWindow(Adw.ApplicationWindow):
     def _copy_for(self, purpose, pdf):
         """Write a copy of the document as it stands now (unsaved edits included) into
         AceOffice's cache, named like the document, and return its path."""
+        if self.notes:
+            self.notes.commit(wait=True)
         folder = os.path.join(GLib.get_user_cache_dir(), "aceoffice", purpose)
         shutil.rmtree(folder, ignore_errors=True)
         os.makedirs(folder, exist_ok=True)

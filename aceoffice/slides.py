@@ -13,7 +13,11 @@ LibreOffice's slideshow renderer at the screen's own resolution. Animations and 
 presentation's own transitions aren't played yet.
 """
 
-from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk
+import os
+import tempfile
+import time
+
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Graphene, Gtk, Pango
 
 THUMB_W = 168            # logical pixels
 
@@ -73,6 +77,10 @@ class SlideNavigator(Gtk.Box):
         click = Gtk.GestureClick(button=3)
         click.connect("pressed", self._on_right_click)
         self.list.add_controller(click)
+        # Drag a slide to a new place in the list.
+        drop = Gtk.DropTarget.new(GObject.TYPE_INT, Gdk.DragAction.MOVE)
+        drop.connect("drop", self._on_drop)
+        self.list.add_controller(drop)
 
     @property
     def doc(self):
@@ -101,6 +109,12 @@ class SlideNavigator(Gtk.Box):
             picture.set_size_request(THUMB_W, thumb_h)
             frame.append(picture)
             row.append(frame)
+            drag = Gtk.DragSource(actions=Gdk.DragAction.MOVE)
+            drag.connect("prepare", lambda _s, _x, _y, n=n: Gdk.ContentProvider.new_for_value(
+                GObject.Value(GObject.TYPE_INT, n)))
+            drag.connect("drag-begin", lambda s, _d, p=picture: s.set_icon(p.get_paintable(), 0, 0)
+                         if p.get_paintable() else None)
+            row.add_controller(drag)
             self.list.append(row)
             self.pictures.append(picture)
         self._syncing = False
@@ -178,6 +192,13 @@ class SlideNavigator(Gtk.Box):
             return True
         return False
 
+    def _on_drop(self, _target, source, _x, y):
+        row = self.list.get_row_at_y(int(y))
+        target = row.get_index() if row else len(self.pictures) - 1
+        if target != source:
+            self.win.move_slide(source, target)
+        return True
+
     def _on_right_click(self, gesture, _n, x, y):
         row = self.list.get_row_at_y(int(y))
         if row:
@@ -209,7 +230,7 @@ class Presenter(Adw.Window):
     slides; Home and End jump; Esc ends the show."""
     __gtype_name__ = "AcePresenter"
 
-    def __init__(self, win, start=0):
+    def __init__(self, win, start=0, console=None):
         super().__init__(transient_for=win, modal=True, css_classes=["ace-presenter"],
                          title="Slideshow", decorated=False)
         self.win = win
@@ -239,8 +260,21 @@ class Presenter(Adw.Window):
         click.connect("pressed", self._on_click)
         self.add_controller(click)
         self.connect("notify::default-width", lambda *_: self._cache.clear())
-        self.fullscreen()
+        # With a second screen (a projector), the slides go there and this screen shows the
+        # presenter display: current and next slide, notes, a clock and a timer.
+        self.console = None
+        monitors = list(self.get_display().get_monitors())
+        here = (self.get_display().get_monitor_at_surface(win.get_surface()) if win.get_surface() else None)
+        others = [m for m in monitors if m is not here]
+        if console is None:
+            console = bool(here and others)
+        if console and others:
+            self.fullscreen_on_monitor(others[0])
+        else:
+            self.fullscreen()
         self.present()
+        if console:
+            self.console = Console(self)
         GLib.idle_add(self._show, False)
 
     def _width_px(self):
@@ -258,6 +292,8 @@ class Presenter(Adw.Window):
         return self._cache[n]
 
     def _show(self, animate=True):
+        if self.console:
+            self.console.update()
         if self.index >= self.count:
             self.stack.set_visible_child_full("end", Gtk.StackTransitionType.CROSSFADE)
             return False
@@ -280,6 +316,8 @@ class Presenter(Adw.Window):
     def finish(self):
         if self.win.view and self.count:
             self.win.select_slide(self.slides[min(self.index, self.count - 1)]["index"])
+        if self.console:
+            self.console.finish()
         self.close()
 
     def _on_key(self, _ctl, keyval, _code, _state):
@@ -308,3 +346,214 @@ class Presenter(Adw.Window):
             self.finish()
         else:
             self.go(self.index + 1)
+
+
+class Console(Adw.Window):
+    """The presenter display, on the presenter's own screen while the slides are on another:
+    the current slide, the next one, this slide's notes, the time and a timer."""
+    __gtype_name__ = "AcePresenterConsole"
+
+    def __init__(self, show):
+        super().__init__(transient_for=show.win, css_classes=["ace-console"], title="Presenter Display",
+                         default_width=1100, default_height=700)
+        self.presenter = show
+        self.started = time.monotonic()
+        self.current = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, can_shrink=True, hexpand=True, vexpand=True)
+        from .manager import Thumb          # a picture of fixed size, whatever its image
+        w, h = show.doc.size_twips()
+        self.next = Thumb(340, round(340 * h / w) if w else 191)
+        self.next.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.next.set_visible(True)
+        self.next_label = Gtk.Label(label="Next", xalign=0, css_classes=["ace-console-caption"])
+        self.count = Gtk.Label(xalign=0, css_classes=["ace-console-caption"])
+        self.notes = Gtk.Label(xalign=0, yalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, selectable=False,
+                               css_classes=["ace-console-notes"])
+        self.clock = Gtk.Label(css_classes=["ace-console-clock", "numeric"], xalign=0, hexpand=True)
+        self.timer = Gtk.Label(css_classes=["ace-console-clock", "numeric"], xalign=1)
+
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, hexpand=True)
+        left.append(self.count)
+        left.append(self.current)
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, hexpand=False)
+        right.set_size_request(340, -1)
+        right.append(self.next_label)
+        right.append(self.next)
+        right.append(Gtk.Label(label="Notes", xalign=0, css_classes=["ace-console-caption"], margin_top=10))
+        right.append(Gtk.ScrolledWindow(child=self.notes, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER))
+        body = Gtk.Box(spacing=24, vexpand=True)
+        body.append(left)
+        body.append(right)
+        top = Gtk.Box(spacing=12)
+        top.append(self.clock)
+        top.append(self.timer)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin_start=24, margin_end=24,
+                      margin_top=18, margin_bottom=24)
+        box.append(top)
+        box.append(body)
+        self.set_content(box)
+
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", show._on_key)
+        self.add_controller(keys)
+        self.connect("close-request", lambda *_: self._closed())
+        self._tick_source = GLib.timeout_add(500, self._tick)
+        self._tick()
+        self.maximize()
+        self.present()
+
+    def update(self):
+        show = self.presenter
+        n = show.index
+        if n >= show.count:
+            self.count.set_label("End of slideshow")
+            self.next.set_paintable(None)
+            self.next_label.set_label("")
+            self.notes.set_label("")
+            return
+        self.count.set_label(f"Slide {n + 1} of {show.count}")
+        self.current.set_paintable(show._texture(n))
+        has_next = n + 1 < show.count
+        self.next.set_paintable(show._texture(n + 1) if has_next else None)
+        self.next_label.set_label("Next" if has_next else "Last slide")
+        notes = show.win.notes.text_for(show.slides[n]["index"]) if show.win.notes else ""
+        self.notes.set_label(notes or "No notes for this slide.")
+        if notes:
+            self.notes.remove_css_class("dim-label")
+        else:
+            self.notes.add_css_class("dim-label")
+
+    def _tick(self):
+        self.clock.set_label(time.strftime("%-I:%M %p"))
+        elapsed = int(time.monotonic() - self.started)
+        self.timer.set_label(f"{elapsed // 3600}:{elapsed % 3600 // 60:02d}:{elapsed % 60:02d}")
+        return True
+
+    def _closed(self):
+        # Closing the presenter display ends the show.
+        if self._tick_source:
+            GLib.source_remove(self._tick_source)
+            self._tick_source = 0
+            self.presenter.console = None
+            self.presenter.finish()
+        return False
+
+    def finish(self):
+        if self._tick_source:
+            GLib.source_remove(self._tick_source)
+            self._tick_source = 0
+        self.close()
+
+
+class NotesPane(Gtk.Box):
+    """Presenter notes for the current slide, under the slide as in Keynote.
+
+    Notes are read and written by the Slides macros (see macros/Slides.bas): all of them
+    once when the presentation opens and after slides are added, removed or moved; one
+    slide's shortly after you stop typing in it.
+    """
+    __gtype_name__ = "AceNotesPane"
+
+    def __init__(self, win):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, css_classes=["ace-notes"])
+        self.win = win
+        self.texts = []          # per slide
+        self.slide = -1
+        self._dirty = False
+        self._loading = False
+        self._debounce = 0
+        self._folder = tempfile.mkdtemp(prefix="notes-", dir=_cache_dir())
+        self.view = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, top_margin=8, bottom_margin=8,
+                                 left_margin=14, right_margin=14, css_classes=["ace-notes-text"])
+        self.view.get_buffer().connect("changed", self._on_changed)
+        self.placeholder = Gtk.Label(label="Presenter notes", xalign=0, yalign=0, margin_start=14, margin_top=8,
+                                     css_classes=["dim-label"], can_target=False)
+        overlay = Gtk.Overlay(child=Gtk.ScrolledWindow(child=self.view, hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                                       min_content_height=96, max_content_height=96))
+        overlay.add_overlay(self.placeholder)
+        self.append(overlay)
+
+    def text_for(self, slide):
+        if slide == self.slide:
+            return self._buffer_text()
+        return self.texts[slide] if 0 <= slide < len(self.texts) else ""
+
+    def _buffer_text(self):
+        buf = self.view.get_buffer()
+        return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+
+    # --- reading ---------------------------------------------------------------------
+
+    def reload(self):
+        """Read every slide's notes from the document (the macro answers through a file)."""
+        self.commit()
+        out = os.path.join(self._folder, f"all-{time.monotonic_ns()}.txt")
+        self.win.doc.run_macro(f'Slides.GetNotes("{out}")')
+        tries = [0]
+
+        def poll():
+            tries[0] += 1
+            if not self.win.doc:
+                return False
+            if not os.path.exists(out):
+                return tries[0] < 60
+            with open(out, encoding="utf-8") as f:
+                records = f.read().split("\n\x1e\n")
+            os.unlink(out)
+            self.texts = [r for r in records[:-1]]
+            self.slide = -1
+            self.show_slide(self.win.doc.part())
+            return False
+        GLib.timeout_add(50, poll)
+
+    def show_slide(self, n):
+        if n == self.slide:
+            return
+        self.commit()
+        self.slide = n
+        self._loading = True
+        self.view.get_buffer().set_text(self.texts[n] if 0 <= n < len(self.texts) else "")
+        self._loading = False
+        self.placeholder.set_visible(not self._buffer_text())
+
+    # --- writing ---------------------------------------------------------------------
+
+    def _on_changed(self, _buf):
+        self.placeholder.set_visible(not self._buffer_text())
+        if self._loading:
+            return
+        self._dirty = True
+        self.win.set_modified(True)
+        if self._debounce:
+            GLib.source_remove(self._debounce)
+        self._debounce = GLib.timeout_add(700, self._after_pause)
+
+    def _after_pause(self):
+        self._debounce = 0
+        self.commit()
+        return False
+
+    def commit(self, wait=False):
+        """Write this slide's notes into the document if they changed. wait: give LibreOffice
+        a moment to run the macro, for callers about to save."""
+        if self._debounce:
+            GLib.source_remove(self._debounce)
+            self._debounce = 0
+        if not self._dirty or self.slide < 0 or not self.win.doc:
+            return
+        self._dirty = False
+        text = self._buffer_text()
+        while len(self.texts) <= self.slide:
+            self.texts.append("")
+        self.texts[self.slide] = text
+        path = os.path.join(self._folder, f"slide-{time.monotonic_ns()}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        self.win.doc.run_macro(f'Slides.SetNotes("{self.slide}","{path}")')
+        if wait:
+            time.sleep(0.3)
+
+
+def _cache_dir():
+    folder = os.path.join(GLib.get_user_cache_dir(), "aceoffice", "open")
+    os.makedirs(folder, exist_ok=True)
+    return folder
