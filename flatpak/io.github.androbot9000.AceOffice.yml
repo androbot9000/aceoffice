@@ -15,6 +15,9 @@ finish-args:
   # Documents live anywhere in your home folder, and LibreOffice writes a lock file
   # beside each file it has open, which the file-chooser portal alone can't allow.
   - --filesystem=home
+  # Share by Email hands the file straight to ACE Mail when it is running.
+  - --talk-name=ai.playerpiano.AceMail
+  - --talk-name=ca.ayrescapital.AceMail
 
 modules:
   - name: libreoffice

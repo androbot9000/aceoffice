@@ -6,6 +6,7 @@
 
 import json
 import os
+import shutil
 import threading
 
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango
@@ -46,6 +47,50 @@ def private_copy(path):
     shutil.copyfile(path, copy)
     os.chmod(copy, 0o600)
     return copy
+
+
+# Commands from LibreOffice's own right-click menu that AceOffice passes on, with its labels.
+# Only ones that work without a LibreOffice dialog.
+CONTEXT_LABELS = {
+    ".uno:SpellCheckIgnore": "Ignore Spelling", ".uno:SpellCheckIgnoreAll": "Ignore All",
+    ".uno:AddToWordbook": "Learn Spelling",
+    ".uno:InsertRowsBefore": "Add Row Above", ".uno:InsertRowsAfter": "Add Row Below",
+    ".uno:InsertColumnsBefore": "Add Column Before", ".uno:InsertColumnsAfter": "Add Column After",
+    ".uno:DeleteRows": "Delete Row", ".uno:DeleteColumns": "Delete Column", ".uno:DeleteTable": "Delete Table",
+    ".uno:MergeCells": "Merge Cells",
+    ".uno:BringToFront": "Bring to Front", ".uno:SendToBack": "Send to Back",
+    ".uno:ObjectForwardOne": "Bring Forward", ".uno:ObjectBackOne": "Send Backward",
+    ".uno:Forward": "Bring Forward", ".uno:Backward": "Send Backward",
+    ".uno:HideRow": "Hide Row", ".uno:ShowRow": "Unhide Rows",
+    ".uno:HideColumn": "Hide Column", ".uno:ShowColumn": "Unhide Columns",
+}
+
+
+def context_commands(payload):
+    """From LibreOffice's context-menu JSON: ([spelling items], [other items]) as (label, command)."""
+    try:
+        items = json.loads(payload).get("menu", []) if payload else []
+    except ValueError:
+        items = []
+    spelling, extra, seen = [], [], set()
+
+    def walk(entries):
+        for e in entries:
+            if e.get("type") == "menu":
+                walk(e.get("menu", []))
+                continue
+            command = e.get("command", "")
+            name = command.split("?")[0]
+            if e.get("enabled") == "false" or command in seen:
+                continue
+            if name == ".uno:SpellCheckApplySuggestion":
+                seen.add(command)
+                spelling.append((e.get("text", "").replace("~", ""), command))
+            elif name in CONTEXT_LABELS and CONTEXT_LABELS[name] not in [x[0] for x in spelling + extra]:
+                seen.add(command)
+                (spelling if "Spell" in name or "Wordbook" in name else extra).append((CONTEXT_LABELS[name], command))
+    walk(items)
+    return spelling[:8], extra
 
 
 def slides_render(doc):
@@ -110,6 +155,11 @@ class DocumentWindow(Adw.ApplicationWindow):
         file_section = Gio.Menu()
         file_section.append("Save As…", "win.save-as")
         file_section.append("Export as PDF…", "win.export-pdf")
+        file_section.append("Print…", "win.print")
+        share = Gio.Menu()
+        share.append("Email the Document", "win.share-email")
+        share.append("Email a PDF", "win.share-email-pdf")
+        file_section.append_submenu("Share", share)
         main_menu.append_section(None, file_section)
         view_section = Gio.Menu()
         view_section.append("Zoom In", "win.zoom-in")
@@ -162,6 +212,8 @@ class DocumentWindow(Adw.ApplicationWindow):
         self.set_content(self.toolbar_view)
 
         for name, cb in [("save", self.save), ("save-as", self.save_as), ("export-pdf", self.export_pdf),
+                         ("print", self.print_document), ("share-email", lambda: self.share_by_email(False)),
+                         ("share-email-pdf", lambda: self.share_by_email(True)),
                          ("zoom-in", lambda: self._zoom(1.1)), ("zoom-out", lambda: self._zoom(1 / 1.1)),
                          ("zoom-reset", lambda: self._zoom(None)), ("find", self._show_find),
                          ("cut", lambda: self.view.cut()), ("copy", lambda: self.view.copy()),
@@ -506,8 +558,20 @@ class DocumentWindow(Adw.ApplicationWindow):
 
     # --- context menu ------------------------------------------------------------
 
-    def _on_context_menu(self, view, x, y):
+    def _on_context_menu(self, view, x, y, payload=""):
         menu = Gio.Menu()
+        group = Gio.SimpleActionGroup()
+        view.insert_action_group("ctx", group)
+        spelling, extra = context_commands(payload)
+        for n, (items, section) in enumerate(((spelling, Gio.Menu()), (extra, Gio.Menu()))):
+            for i, (label, command) in enumerate(items):
+                action = Gio.SimpleAction(name=f"c{n}-{i}")
+                action.connect("activate", lambda _a, _p, c=command: (self.doc.uno(c), self._set_modified(True),
+                                                                      self.view.grab_focus()))
+                group.add_action(action)
+                section.append(label, f"ctx.c{n}-{i}")
+            if items:
+                menu.append_section(None, section)
         edit = Gio.Menu()
         edit.append("Cut", "win.cut")
         edit.append("Copy", "win.copy")
@@ -763,7 +827,7 @@ class DocumentWindow(Adw.ApplicationWindow):
             self._update_title()
 
     def _set_doc_actions(self, enabled):
-        for name in ("save", "save-as", "export-pdf", "zoom-in", "zoom-out", "zoom-reset", "find",
+        for name in ("save", "save-as", "export-pdf", "print", "share-email", "share-email-pdf", "zoom-in", "zoom-out", "zoom-reset", "find",
                      "cut", "copy", "paste", "select-all", "format-panel", "show-format-bar"):
             self.lookup_action(name).set_enabled(enabled)
 
@@ -832,11 +896,54 @@ class DocumentWindow(Adw.ApplicationWindow):
             except GLib.Error:
                 return
             try:
-                self.doc.save_as(path, "pdf")
+                self.doc.export(path, "pdf")
                 self.toasts.add_toast(Adw.Toast(title=f"Exported {os.path.basename(path)}", timeout=2))
             except lok.LOKError as e:
                 self.toasts.add_toast(Adw.Toast(title=f"Couldn't export: {e}"))
         dialog.save(self, None, done)
+
+    # --- printing and sharing -------------------------------------------------------
+
+    def _copy_for(self, purpose, pdf):
+        """Write a copy of the document as it stands now (unsaved edits included) into
+        AceOffice's cache, named like the document, and return its path."""
+        folder = os.path.join(GLib.get_user_cache_dir(), "aceoffice", purpose)
+        shutil.rmtree(folder, ignore_errors=True)
+        os.makedirs(folder, exist_ok=True)
+        name = self._display_name()
+        stem, ext = os.path.splitext(name)
+        ext = "pdf" if pdf else (ext.lstrip(".").lower() if self.path else DEFAULT_EXT[self.kind])
+        path = os.path.join(folder, f"{stem or 'Untitled'}.{ext}")
+        self.doc.export(path, ext)
+        return path
+
+    def print_document(self):
+        """Print through the system dialog. LibreOffice lays the pages out as a PDF first."""
+        try:
+            pdf = self._copy_for("print", pdf=True)
+        except lok.LOKError as e:
+            self.toasts.add_toast(Adw.Toast(title=f"Couldn't prepare for printing: {e}"))
+            return
+        dialog = Gtk.PrintDialog(title=f"Print {self._display_name()}", modal=True)
+
+        def done(d, res):
+            try:
+                d.print_file_finish(res)
+            except GLib.Error as e:
+                if not e.matches(Gtk.dialog_error_quark(), Gtk.DialogError.DISMISSED):
+                    self.toasts.add_toast(Adw.Toast(title=f"Couldn't print: {e.message}"))
+        dialog.print_file(self, None, Gio.File.new_for_path(pdf), None, done)
+
+    def share_by_email(self, pdf):
+        """A new message in your mail app with this document attached (as it is now)."""
+        try:
+            path = self._copy_for("share", pdf)
+        except lok.LOKError as e:
+            self.toasts.add_toast(Adw.Toast(title=f"Couldn't prepare the attachment: {e}"))
+            return
+        from . import share
+        share.email_file(path, self._display_name(),
+                         lambda error: error and self.toasts.add_toast(Adw.Toast(title=error, timeout=6)))
 
     # --- closing --------------------------------------------------------------------
 

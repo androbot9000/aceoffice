@@ -127,6 +127,39 @@ def step_typing():
     GLib.timeout_add(40, next_key)
 
 
+def step_everyday(win):
+    """Spelling suggestions on right-click; the copies that Print and Share by Email hand over."""
+    from aceoffice import share, window
+    v = win.view
+    v.type_text(" wrold")
+    loop_until(lambda: False, 1500)                 # the spell checker runs in idle time
+    x, y, _w, h = v._cursor
+    menus = []
+    handler = v.connect("context-menu", lambda _v, _x, _y, payload: menus.append(payload))
+    v.handler_block_by_func(win._on_context_menu)
+    v.context_click(v._offset_x() + (x - 300) * v.ppt, (y + h / 2) * v.ppt)
+    loop_until(lambda: menus, 3000)
+    v.disconnect(handler)
+    v.handler_unblock_by_func(win._on_context_menu)
+    spelling, _extra = window.context_commands(menus[0] if menus else "")
+    labels = [label for label, _c in spelling]
+    check(f"right-click offers spelling suggestions ({labels})", "world" in labels and "Learn Spelling" in labels)
+    if spelling:
+        win.doc.uno(dict(spelling)["world"])
+        loop_until(lambda: False, 400)
+        v.press_key(0, 1029)                        # End: drop the selection the correction leaves
+        loop_until(lambda: not v._selection, 1000)
+    pdf = win._copy_for("print", pdf=True)
+    with open(pdf, "rb") as f:
+        check(f"Print lays the document out as a PDF ({os.path.basename(pdf)})", f.read(5) == b"%PDF-")
+    sent = []
+    real, share.email_file = share.email_file, lambda path, subject, done: sent.append((path, subject))
+    win.share_by_email(False)
+    share.email_file = real
+    check(f"Share by Email attaches a copy named like the document ({sent and os.path.basename(sent[0][0])})",
+          bool(sent) and os.path.basename(sent[0][0]) == "Untitled.docx" and os.path.getsize(sent[0][0]) > 1000)
+
+
 def step_find_and_menu(win):
     """Find a word, then search for one that isn't there; and open the colour palette."""
     found = []
@@ -232,6 +265,7 @@ def step_text_shot():
     check(f"no blank tiles while typing ({win.view.placeholder_frames} of {win.view.frames} frames)",
           win.view.frames > 20 and win.view.placeholder_frames == 0)
     shot(win, "2-document")
+    step_everyday(win)
     step_find_and_menu(win)
     step_page_setup(win)
     step_tools(win)

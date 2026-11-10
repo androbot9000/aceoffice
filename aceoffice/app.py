@@ -85,7 +85,7 @@ window.ace-presenter, window.ace-presenter stack { background: black; }
 
 SHORTCUTS = [
     ("Files", [("New from a template", "<Ctrl>n"), ("Open", "<Ctrl>o"), ("Save", "<Ctrl>s"),
-               ("Save as", "<Ctrl><Shift>s"), ("Export as PDF", "<Ctrl>p"), ("Close window", "<Ctrl>w"),
+               ("Save as", "<Ctrl><Shift>s"), ("Print", "<Ctrl>p"), ("Export as PDF", "<Ctrl><Shift>e"), ("Close window", "<Ctrl>w"),
                ("Quit", "<Ctrl>q")]),
     ("Editing", [("Undo", "<Ctrl>z"), ("Redo", "<Ctrl><Shift>z"), ("Cut", "<Ctrl>x"), ("Copy", "<Ctrl>c"),
                  ("Paste", "<Ctrl>v"), ("Select all", "<Ctrl>a"), ("Find", "<Ctrl>f")]),
@@ -138,7 +138,7 @@ class AceOfficeApp(Adw.Application):
             if accels:
                 self.set_accels_for_action(f"app.{name}", accels)
         for action, accels in [("win.save", ["<Ctrl>s"]), ("win.save-as", ["<Ctrl><Shift>s"]),
-                               ("win.export-pdf", ["<Ctrl>p"]), ("win.zoom-in", ["<Ctrl>plus", "<Ctrl>equal"]),
+                               ("win.print", ["<Ctrl>p"]), ("win.export-pdf", ["<Ctrl><Shift>e"]), ("win.zoom-in", ["<Ctrl>plus", "<Ctrl>equal"]),
                                ("win.zoom-out", ["<Ctrl>minus"]), ("win.zoom-reset", ["<Ctrl>0"]),
                                ("win.find", ["<Ctrl>f"]), ("win.format-panel", ["<Ctrl><Shift>f"]),
                                # Keynote: Option-Command-P plays; PowerPoint: F5 from the start.

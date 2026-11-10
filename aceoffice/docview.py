@@ -46,7 +46,9 @@ class DocView(Gtk.Widget):
         "cell-address-changed": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "zoom-changed": (GObject.SignalFlags.RUN_FIRST, None, (float,)),
         "edited": (GObject.SignalFlags.RUN_FIRST, None, ()),
-        "context-menu": (GObject.SignalFlags.RUN_FIRST, None, (float, float)),
+        # Right-click at x, y; the string is LibreOffice's own menu for that spot as JSON
+        # (spelling suggestions, table commands), or "" if it offered none.
+        "context-menu": (GObject.SignalFlags.RUN_FIRST, None, (float, float, str)),
         "search-not-found": (GObject.SignalFlags.RUN_FIRST, None, ()),
         "comment": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         # LibreOffice redrew part of a sheet or slide (-1: the current one); slide thumbnails follow.
@@ -73,6 +75,7 @@ class DocView(Gtk.Widget):
         self._graphic = None
         self._buttons = 0
         self._hadj = self._vadj = None
+        self._menu_at = None
         # Slides sit in the middle of the window, with a shadow, as in Keynote.
         self.center = False
         # Keep the page fitted to the window as it resizes, until the user zooms.
@@ -406,6 +409,10 @@ class DocView(Gtk.Widget):
             self.emit("formula-changed", payload)
         elif kind == lok.CALLBACK_CELL_ADDRESS:
             self.emit("cell-address-changed", payload)
+        elif kind == lok.CALLBACK_CONTEXT_MENU:
+            if self._menu_at:
+                at, self._menu_at = self._menu_at, None
+                self.emit("context-menu", at[0], at[1], payload)
         elif kind == lok.CALLBACK_COMMENT:
             self.emit("comment", payload)
         elif kind == lok.CALLBACK_INVALIDATE_HEADER:
@@ -561,7 +568,9 @@ class DocView(Gtk.Widget):
     def _on_pressed(self, gesture, n_press, x, y):
         self.grab_focus()
         if gesture.get_current_button() == 3:
-            self.emit("context-menu", x, y)
+            # LibreOffice moves the caret there (as a Mac does) and answers with its menu;
+            # if it stays silent, show ours anyway.
+            self.context_click(x, y)
             return
         button = {1: lok.MOUSE_LEFT, 2: lok.MOUSE_MIDDLE}.get(gesture.get_current_button())
         if not button:
@@ -570,6 +579,20 @@ class DocView(Gtk.Widget):
         tx, ty = self.to_twips(x, y)
         mods = keys.modifiers(gesture.get_current_event_state())
         self.doc.mouse(lok.MOUSEEVENT_DOWN, tx, ty, n_press, button, mods)
+
+    def context_click(self, x, y):
+        tx, ty = self.to_twips(x, y)
+        self._menu_at = (x, y)
+        self.doc.mouse(lok.MOUSEEVENT_DOWN, tx, ty, 1, lok.MOUSE_RIGHT, 0)
+        self.doc.mouse(lok.MOUSEEVENT_UP, tx, ty, 1, lok.MOUSE_RIGHT, 0)
+        GLib.timeout_add(250, self._menu_fallback, self._menu_at)
+
+    def _menu_fallback(self, at):
+        if self._menu_at is at:
+            self._menu_at = None
+            if not self.doc.closed:
+                self.emit("context-menu", at[0], at[1], "")
+        return False
 
     def _on_released(self, gesture, n_press, x, y):
         if not self._buttons:

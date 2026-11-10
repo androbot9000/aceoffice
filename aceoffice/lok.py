@@ -38,6 +38,7 @@ CALLBACK_SET_PART = 14
 CALLBACK_CELL_CURSOR = 17
 CALLBACK_MOUSE_POINTER = 18
 CALLBACK_CELL_FORMULA = 19
+CALLBACK_CONTEXT_MENU = 23
 CALLBACK_COMMENT = 32
 CALLBACK_INVALIDATE_HEADER = 33
 CALLBACK_CELL_ADDRESS = 34
@@ -434,6 +435,12 @@ class Document:
         if not ok:
             raise LOKError(Office.get().error() or f"Could not save {path}")
         self.path = path
+
+    def export(self, path, fmt, options=None):
+        """Write a copy (a PDF, say) without the document adopting that file."""
+        url = "file://" + os.path.abspath(path)
+        if not self._c.saveAs(self._d, url.encode(), fmt.encode(), options.encode() if options else None):
+            raise LOKError(Office.get().error() or f"Could not write {path}")
 
     def destroy(self):
         with _VIEW_LOCK:
