@@ -330,6 +330,16 @@ def step_sheet_shot():
     rows = [e[0] for e in win.headers.rows.entries[:3]]
     check(f"row and column headers ({cols}, {rows})", cols == ["A", "B", "C"] and rows == ["1", "2", "3"])
     print("  formula:", win.formula.get_text(), "cell:", win.cell_label.get_label(), flush=True)
+    cols = win.headers.columns
+    width = lambda i: cols.entries[i][2] - cols.entries[i][1]   # noqa: E731
+    before = width(0)
+    cols.resize(0, before * 2)
+    loop_until(lambda: width(0) != before, 3000)
+    check(f"dragging a column border resizes the column ({before:.0f} to {width(0):.0f} px)",
+          abs(width(0) - before * 2) < 3)
+    cols.fit(0)
+    loop_until(lambda: abs(width(0) - before * 2) > 3, 3000)
+    check(f"double-clicking it fits the contents ({width(0):.0f} px)", width(0) < before * 2 - 3)
     win._add_sheet()
     GLib.timeout_add(1200, lambda: step_sheet2() or False)
 

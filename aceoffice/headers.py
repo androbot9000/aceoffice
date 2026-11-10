@@ -83,7 +83,13 @@ class HeaderStrip(Gtk.Widget):
         self.set_overflow(Gtk.Overflow.HIDDEN)
         click = Gtk.GestureClick()
         click.connect("pressed", self._on_pressed)
+        click.connect("released", self._on_released)
         self.add_controller(click)
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", self._on_motion)
+        motion.connect("leave", lambda *_: self._drag is None and self.set_cursor_from_name(None))
+        self.add_controller(motion)
+        self._drag = None        # (entry index, position now) while a border is dragged
 
     @property
     def horizontal(self):
@@ -146,12 +152,78 @@ class HeaderStrip(Gtk.Widget):
                 snapshot.translate(Graphene.Point().init((width - tw) / 2, a + (b - a - th) / 2))
             snapshot.append_layout(layout, fg)
             snapshot.restore()
+        if self._drag:
+            at = self._drag[1] + off
+            guide = _accent()
+            snapshot.append_color(guide, Graphene.Rect().init(at - 1, 0, 2, height) if self.horizontal
+                                  else Graphene.Rect().init(0, at - 1, width, 2))
         border = (Graphene.Rect().init(0, height - 1, width, 1) if self.horizontal
                   else Graphene.Rect().init(width - 1, 0, 1, height))
         snapshot.append_color(line, border)
 
-    def _on_pressed(self, gesture, _n, x, y):
+    # Drag the border after a header to resize that column or row; double-click it to fit
+    # the contents, as in Numbers and Excel.
+
+    def _edge_at(self, pos):
+        for i, (_label, _start, end) in enumerate(self.entries):
+            if abs(end - pos) <= 4:
+                return i
+        return None
+
+    def _on_motion(self, _ctl, x, y):
         pos = (x if self.horizontal else y) - self._offset()
+        if self._drag:
+            self._drag = (self._drag[0], pos)
+            self.queue_draw()
+            return
+        resize = "col-resize" if self.horizontal else "row-resize"
+        self.set_cursor_from_name(resize if self._edge_at(pos) is not None else None)
+
+    def _on_released(self, _gesture, _n, x, y):
+        if not self._drag:
+            return
+        index, pos = self._drag
+        self._drag = None
+        self.queue_draw()
+        self.resize(index, pos - self.entries[index][1])
+
+    def resize(self, index, size_px):
+        """Make column or row index (0-based) size_px wide or tall at the current zoom."""
+        view = self.owner.view
+        hundredths_mm = max(100, round(size_px / view.zoom * 2540 / 96))
+        number = self._number(index)
+        if self.horizontal:
+            view.doc.uno(".uno:ColumnWidth", _args(ColumnWidth=("unsigned short", min(hundredths_mm, 60000)),
+                                                   Column=("long", number)))
+        else:
+            view.doc.uno(".uno:RowHeight", _args(RowHeight=("unsigned short", min(hundredths_mm, 60000)),
+                                                 Row=("long", number)))
+        view.emit("edited")
+
+    def _number(self, index):
+        """1-based column or row number of entry index."""
+        label = self.entries[index][0]
+        return _column_index(label) + 1 if self.horizontal else int(label)
+
+    def fit(self, index):
+        view = self.owner.view
+        self._select(self.entries[index][0], 0)
+        if self.horizontal:
+            view.doc.uno(".uno:SetOptimalColumnWidthDirect")
+        else:
+            view.doc.uno(".uno:SetOptimalRowHeight", _args(aExtraHeight=("unsigned short", 0)))
+        view.emit("edited")
+
+    def _on_pressed(self, gesture, n_press, x, y):
+        pos = (x if self.horizontal else y) - self._offset()
+        edge = self._edge_at(pos)
+        if edge is not None:
+            if n_press == 2:
+                self._drag = None
+                self.fit(edge)
+            else:
+                self._drag = (edge, pos)
+            return
         for i, (label, start, end) in enumerate(self.entries):
             if start <= pos < end:
                 self._select(label, gesture.get_current_event_state())
